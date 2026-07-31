@@ -22,14 +22,11 @@ console.log(`Persistent storage: ${process.env.RENDER_PERSISTENT_DISK ? 'enabled
 
 // ─── Constants ──────────────────────────────────────────────────────────
 const MAX_TERMS = 30;
-const MAX_LOGIN_ATTEMPTS = 5;
-const LOCKOUT_MINUTES = 15;
 const MEMBERSHIP_SYNC_INTERVAL = 60000; // 1 minute
 
 // ─── In‑memory state ──────────────────────────────────────────────────
 const sessions = new Map();           // userId -> { lastActive, membership }
 const userCache = new Map();          // userId -> { terms, bargains }
-const loginAttempts = new Map();      // ip -> { attempts, firstAttempt, blockedUntil }
 
 // ─── Global job queue and workers ──────────────────────────────────
 let jobQueue = [];
@@ -253,29 +250,6 @@ function queueJob(userId, term, type) {
   processQueue();
 }
 
-// ─── Rate limiting ──────────────────────────────────────────────────
-function checkRateLimit(ip) {
-  const now = Date.now();
-  const record = loginAttempts.get(ip);
-  if (!record) {
-    loginAttempts.set(ip, { attempts: 1, firstAttempt: now });
-    return true;
-  }
-  if (record.blockedUntil && now < record.blockedUntil) return false;
-  if (record.blockedUntil && now >= record.blockedUntil) {
-    loginAttempts.delete(ip);
-    return true;
-  }
-  if (record.attempts >= MAX_LOGIN_ATTEMPTS) {
-    record.blockedUntil = now + LOCKOUT_MINUTES * 60 * 1000;
-    loginAttempts.set(ip, record);
-    return false;
-  }
-  record.attempts++;
-  loginAttempts.set(ip, record);
-  return true;
-}
-
 // ─── Membership management ──────────────────────────────────────────
 function hasMembership(userId) {
   const session = sessions.get(userId);
@@ -286,10 +260,7 @@ function hasMembership(userId) {
 function cancelUserJobs(userId) {
   // Remove queued jobs
   jobQueue = jobQueue.filter(j => j.userId !== userId);
-  // Remove active jobs and notify workers? We'll just remove from activeJobs;
-  // the worker will eventually send job-complete, but we ignore it because it's not in activeJobs.
-  // To be safe, we can also send a cancel message to the worker if we track which worker is doing it.
-  // For simplicity, we'll just remove from activeJobs.
+  // Remove active jobs
   for (const [key, job] of activeJobs) {
     if (job.userId === userId) {
       activeJobs.delete(key);
@@ -346,9 +317,6 @@ app.use(cors());
 app.use(express.json());
 
 // ─── Frontend HTML ──────────────────────────────────────────────────────
-// (identical to previous, omitted for brevity, but included in full code)
-// We'll embed the same HTML as before.
-
 const HTML = `<!DOCTYPE html>
 <html>
 <head>
@@ -712,11 +680,6 @@ app.post('/login', async (req, res) => {
   const { id } = req.body;
   if (!id) return res.status(400).json({ error: 'Missing ID' });
 
-  const ip = req.ip || req.connection.remoteAddress;
-  if (!checkRateLimit(ip)) {
-    return res.status(429).json({ error: 'Too many failed attempts. Try again later.' });
-  }
-
   try {
     const { data, error } = await supabase
       .from('keys')
@@ -725,12 +688,10 @@ app.post('/login', async (req, res) => {
       .maybeSingle();
 
     if (error || !data) {
-      loginAttempts.set(ip, { attempts: (loginAttempts.get(ip)?.attempts || 0) + 1, firstAttempt: Date.now() });
       return res.status(401).json({ error: 'Invalid ID' });
     }
 
     sessions.set(id, { lastActive: Date.now(), membership: data.membership || null });
-    loginAttempts.delete(ip);
     res.json({ userId: id });
   } catch (err) {
     console.error('Login error:', err);
@@ -751,7 +712,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ─── API endpoints (EXACTLY THE SAME AS ORIGINAL, but with req.userId) ──
+// ─── API endpoints ──────────────────────────────────────────────────
 
 // GET /status
 app.get('/status', (req, res) => {
