@@ -62,13 +62,14 @@ function saveUnique(term, uniqueListings) {
 // ─── Price analysis ────────────────────────────────────────────────────
 function analyzePrices(listings, averagePrice, thresholdPercent) {
   if (!listings || listings.length === 0) return { bargains: [], stats: null };
-  
+  if (!averagePrice) return { bargains: [], stats: null }; // no average set
+
   const prices = listings
     .map(l => parseFloat(l.price.replace(/[^0-9.]/g, '')))
     .filter(p => !isNaN(p) && p > 0);
   if (prices.length === 0) return { bargains: [], stats: null };
   
-  const avg = averagePrice || prices.reduce((a, b) => a + b, 0) / prices.length;
+  const avg = averagePrice;
   const threshold = thresholdPercent || 20;
   
   const bargains = listings.filter(l => {
@@ -121,7 +122,7 @@ function processScrapedListings(term, scraped, jobType) {
   saveHistory(term, updated);
   saveUnique(term, newListings);
 
-  // Only detect bargains if average is set
+  // Only detect bargains if average is set (not null)
   const termConfig = searchTerms.find(t => t.term === term);
   if (termConfig && termConfig.averagePrice !== null && termConfig.averagePrice !== undefined) {
     const analysis = analyzePrices(updated, termConfig.averagePrice, termConfig.thresholdPercent);
@@ -164,6 +165,7 @@ function scheduleJobs() {
   
   for (const termObj of searchTerms) {
     const term = termObj.term;
+    // Only queue scan_new if not already active or queued
     if (!activeJobs.has(term) && !jobQueue.some(j => j.term === term && j.type === 'scan_new')) {
       jobQueue.push({ term, type: 'scan_new' });
     }
@@ -174,6 +176,7 @@ function scheduleJobs() {
 function processQueue() {
   if (jobQueue.length === 0) return;
   
+  // Find an available worker
   let availableClient = null;
   for (let [id, info] of clients) {
     if (!info.busy && info.ws.readyState === WebSocket.OPEN) {
@@ -181,13 +184,25 @@ function processQueue() {
       break;
     }
   }
-  
   if (!availableClient) {
     console.log('No available clients, waiting...');
     return;
   }
   
-  const job = jobQueue.shift();
+  // Find a job whose term is not currently active
+  let jobIndex = -1;
+  for (let i = 0; i < jobQueue.length; i++) {
+    if (!activeJobs.has(jobQueue[i].term)) {
+      jobIndex = i;
+      break;
+    }
+  }
+  if (jobIndex === -1) {
+    console.log('All queued terms are already active, waiting...');
+    return;
+  }
+  
+  const job = jobQueue.splice(jobIndex, 1)[0];
   const clientInfo = clients.get(availableClient);
   clientInfo.busy = true;
   const jobId = `${job.term}-${job.type}-${Date.now()}`;
@@ -437,9 +452,6 @@ const HTML = `<!DOCTYPE html>
       + '</div>';
     if (activeJobs && activeJobs.length > 0) {
       html += '<table><thead><tr><th>Term</th><th>Type</th></tr></thead><tbody>';
-      // activeJobs is an array of term strings, but we need to get type from activeJobs map
-      // We'll use the data passed from server which includes type
-      // For simplicity, just show term names
       activeJobs.forEach(term => {
         html += '<tr><td>' + term + '</td><td>processing</td></tr>';
       });
@@ -582,15 +594,14 @@ app.post('/calculate-average', (req, res) => {
   const termObj = searchTerms.find(t => t.term === term);
   if (!termObj) return res.status(404).json({ error: 'Term not found' });
   
-  // Check if already active or queued
-  if (activeJobs.has(term)) {
-    return res.status(409).json({ error: 'Scan already in progress' });
-  }
-  if (jobQueue.some(j => j.term === term && j.type === 'scan_all')) {
-    return res.status(409).json({ error: 'Average calculation already queued' });
+  // Check if there's already a scan_all job for this term in queue or active
+  const alreadyQueued = jobQueue.some(j => j.term === term && j.type === 'scan_all');
+  const alreadyActive = activeJobs.has(term) && activeJobs.get(term).type === 'scan_all';
+  if (alreadyQueued || alreadyActive) {
+    return res.status(409).json({ error: 'Average calculation already in progress' });
   }
   
-  // Add scan_all job to the front of the queue
+  // Push scan_all to the front of the queue
   jobQueue.unshift({ term, type: 'scan_all' });
   processQueue();
   broadcastUpdate();
