@@ -363,7 +363,8 @@ const HTML = `<!DOCTYPE html>
 <!-- Login Screen -->
 <div id="loginScreen" class="login-container">
 <h2>Login</h2>
-<p>Enter your unique ID (from the keys table)</p>
+<p>Are you pissed off that people keep taking all the good deals as soon as theyre listed?<br> theyre probably using vinted heist. maybe. if you want to snatch bargains as soon as they appear on vinted, our bot will notify you as soon as they appear. </p>
+<p>Enter your unique ID to log in.</p>
 <input type="text" id="loginId" placeholder="Your ID" autocomplete="username" />
 <div id="loginError" class="error"></div>
 <button id="loginBtn">Login</button>
