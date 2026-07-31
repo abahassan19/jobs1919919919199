@@ -5,11 +5,33 @@ const fs = require('fs');
 const WebSocket = require('ws');
 const http = require('http');
 const { createClient } = require('@supabase/supabase-js');
+const webpush = require('web-push');
 
 // ─── Supabase config ──────────────────────────────────────────────────
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ─── VAPID keys (for web push) ───────────────────────────────────────
+// Set these in your environment variables for persistence.
+// If not set, the server will generate them on first run and log them.
+let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
+let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
+
+if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+  const vapidKeys = webpush.generateVAPIDKeys();
+  VAPID_PUBLIC_KEY = vapidKeys.publicKey;
+  VAPID_PRIVATE_KEY = vapidKeys.privateKey;
+  console.log('\n⚠️  VAPID keys generated (set these as env vars for persistence):');
+  console.log(`VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}`);
+  console.log(`VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}\n`);
+}
+
+webpush.setVapidDetails(
+  'mailto:admin@vintedmonitor.com', // replace with your email
+  VAPID_PUBLIC_KEY,
+  VAPID_PRIVATE_KEY
+);
 
 // ─── Server config ────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
@@ -26,7 +48,9 @@ const MEMBERSHIP_SYNC_INTERVAL = 60000; // 1 minute
 
 // ─── In‑memory state ──────────────────────────────────────────────────
 const sessions = new Map();           // userId -> { lastActive, membership }
-const userCache = new Map();          // userId -> { terms, bargains }
+const userCache = new Map();          // userId -> { terms, bargains, notified }
+const pushSubscriptions = new Map();  // userId -> [ { endpoint, keys } ]
+const NOTIFIED_TRACK_FILE = 'notified.json';
 
 // ─── Global job queue and workers ──────────────────────────────────
 let jobQueue = [];
@@ -48,6 +72,12 @@ function getResultsFile(userId, term) {
 function getUniqueFile(userId, term) {
   const safe = term.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_-]/g, '');
   return path.join(getUserDir(userId), `${safe}-unique.json`);
+}
+function getSubscriptionsFile(userId) {
+  return path.join(getUserDir(userId), 'push-subs.json');
+}
+function getNotifiedFile(userId) {
+  return path.join(getUserDir(userId), NOTIFIED_TRACK_FILE);
 }
 function ensureUserDir(userId) {
   const dir = getUserDir(userId);
@@ -90,11 +120,45 @@ function saveUserUnique(userId, term, uniqueListings) {
   const data = { searchTerm: term, lastUpdated: new Date().toISOString(), totalUniqueListings: uniqueListings.length, listings: uniqueListings };
   fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
 }
+
+// ─── Push subscription storage ──────────────────────────────────────
+function loadPushSubscriptions(userId) {
+  const file = getSubscriptionsFile(userId);
+  try {
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+  } catch (_) {}
+  return [];
+}
+function savePushSubscriptions(userId, subs) {
+  ensureUserDir(userId);
+  const file = getSubscriptionsFile(userId);
+  fs.writeFileSync(file, JSON.stringify(subs, null, 2), 'utf8');
+}
+
+// ─── Notified bargains tracking (deduplication) ─────────────────────
+function loadNotified(userId) {
+  const file = getNotifiedFile(userId);
+  try {
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+  } catch (_) {}
+  return {}; // { term: [link1, link2] }
+}
+function saveNotified(userId, notified) {
+  ensureUserDir(userId);
+  const file = getNotifiedFile(userId);
+  fs.writeFileSync(file, JSON.stringify(notified, null, 2), 'utf8');
+}
+
 function getUserData(userId) {
   if (!userCache.has(userId)) {
     userCache.set(userId, {
       terms: loadUserTerms(userId),
-      bargains: {}
+      bargains: {},
+      notified: loadNotified(userId)
     });
   }
   return userCache.get(userId);
@@ -138,14 +202,12 @@ function processScrapedListings(userId, term, scraped, jobType) {
     return { added: 0, newListings: [], averageComputed: false };
   }
 
-  // For scan_all: compute average from ALL scraped listings, save it, and do NOT save history
   if (jobType === 'scan_all') {
     const avg = computeAverage(scraped);
     if (avg !== null) {
       termObj.averagePrice = avg;
       saveUserTerms(userId, userData.terms);
       console.log(`User ${userId} average for "${term}" set to £${avg}`);
-      // Broadcast update so UI shows the new average
       broadcastUpdate(userId);
       return { added: 0, newListings: [], averageComputed: true };
     } else {
@@ -154,7 +216,6 @@ function processScrapedListings(userId, term, scraped, jobType) {
     }
   }
 
-  // scan_new: deduplicate, save history, detect bargains
   const existing = loadUserHistory(userId, term);
   const existingLinks = new Set(existing.map(item => item.link));
   const newListings = scraped.filter(item => !existingLinks.has(item.link));
@@ -170,11 +231,60 @@ function processScrapedListings(userId, term, scraped, jobType) {
   if (termObj.averagePrice) {
     const analysis = analyzePrices(updated, termObj.averagePrice, termObj.thresholdPercent);
     if (analysis.bargains.length > 0) {
-      userData.bargains[term] = analysis.bargains;
-      broadcastBargains(userId, term, analysis.bargains);
+      // Check for truly new bargains (not notified yet)
+      const notified = userData.notified[term] || [];
+      const notifiedSet = new Set(notified);
+      const freshBargains = analysis.bargains.filter(b => !notifiedSet.has(b.link));
+      
+      if (freshBargains.length > 0) {
+        // Store them as notified
+        const newNotified = [...notified, ...freshBargains.map(b => b.link)];
+        userData.notified[term] = newNotified;
+        saveNotified(userId, userData.notified);
+        
+        userData.bargains[term] = freshBargains;
+        broadcastBargains(userId, term, freshBargains);
+        // Also send push notifications for fresh bargains
+        sendPushNotifications(userId, term, freshBargains);
+      }
     }
   }
   return { added: newListings.length, newListings };
+}
+
+// ─── Push notification sender ──────────────────────────────────────────
+function sendPushNotifications(userId, term, bargainsList) {
+  const subs = loadPushSubscriptions(userId);
+  if (!subs || subs.length === 0) return;
+
+  // Build a payload (keep it small)
+  const first = bargainsList[0];
+  const total = bargainsList.length;
+  const title = `💰 Bargain alert! ${total} item${total > 1 ? 's' : ''} for "${term}"`;
+  const body = total === 1 
+    ? `${first.name} — ${first.price} (${first.discount}% off)`
+    : `Check your dashboard for ${total} new bargains.`;
+  const payload = JSON.stringify({
+    title,
+    body,
+    icon: 'https://cdn-icons-png.flaticon.com/512/2331/2331966.png', // generic sale icon
+    badge: 'https://cdn-icons-png.flaticon.com/512/2331/2331966.png',
+    url: '/',
+    data: { term }
+  });
+
+  // Send to each subscription
+  for (const sub of subs) {
+    webpush.sendNotification(sub, payload)
+      .catch(err => {
+        console.error(`Push failed for ${userId}:`, err.statusCode, err.body);
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          // Subscription expired – remove it
+          const newSubs = subs.filter(s => s.endpoint !== sub.endpoint);
+          savePushSubscriptions(userId, newSubs);
+        }
+      });
+  }
 }
 
 // ─── Broadcast functions ──────────────────────────────────────────────
@@ -207,7 +317,8 @@ function broadcastUpdate(userId) {
     clients: clients.size,
     active: Array.from(activeJobs.values()).filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
     queue: jobQueue.filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
-    bargains: userData.bargains
+    bargains: userData.bargains,
+    pushEnabled: loadPushSubscriptions(userId).length > 0
   });
   for (const ws of frontendClients) {
     if (ws.userId === userId && ws.readyState === WebSocket.OPEN) {
@@ -322,6 +433,43 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ─── Serve Service Worker ──────────────────────────────────────────────
+// The service worker must be served from the root scope.
+const SW_SCRIPT = `
+// Service Worker for Vinted Price Monitor
+self.addEventListener('push', function(event) {
+  let data = {};
+  try {
+    data = event.data.json();
+  } catch (e) {
+    data = { title: 'Bargain Alert', body: 'New bargain found!', url: '/' };
+  }
+  const options = {
+    body: data.body || 'Check your dashboard!',
+    icon: data.icon || 'https://cdn-icons-png.flaticon.com/512/2331/2331966.png',
+    badge: data.badge || 'https://cdn-icons-png.flaticon.com/512/2331/2331966.png',
+    data: data.url || '/',
+    vibrate: [200, 100, 200],
+    requireInteraction: true
+  };
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'Vinted Monitor', options)
+  );
+});
+
+self.addEventListener('notificationclick', function(event) {
+  event.notification.close();
+  event.waitUntil(
+    clients.openWindow(event.notification.data || '/')
+  );
+});
+`;
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.send(SW_SCRIPT);
+});
+
 // ─── Frontend HTML ──────────────────────────────────────────────────────
 const HTML = `<!DOCTYPE html>
 <html>
@@ -330,8 +478,12 @@ const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Vinted Price Monitor</title>
 <style>
-*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f5f6fa}.container{max-width:1400px;margin:0 auto;padding:20px}.login-container{max-width:400px;margin:100px auto;background:#fff;border-radius:8px;padding:30px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.login-container h2{margin-top:0}.login-container input{width:100%;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px}.login-container button{width:100%;padding:12px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer}.login-container .error{color:#e74c3c;font-size:14px;margin-top:5px}.hidden{display:none}h1{font-weight:400;color:#2c3e50}.card{background:#fff;border-radius:8px;padding:20px;margin-bottom:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.flex{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.flex label{font-weight:500;min-width:80px}input,select{padding:8px 12px;border:1px solid #ddd;border-radius:4px;font-size:14px;background:#fff}input{flex:1;min-width:160px}button{padding:8px 16px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500}button:hover{background:#2980b9}button.secondary{background:#95a5a6}button.secondary:hover{background:#7f8c8d}button.danger{background:#e74c3c}button.danger:hover{background:#c0392b}button.success{background:#2ecc71}button.success:hover{background:#27ae60}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #ecf0f1}th{background:#f8f9fa;font-weight:600;color:#2c3e50}.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}.badge-active{background:#2ecc71;color:#fff}.badge-idle{background:#bdc3c7;color:#2c3e50}.badge-bargain{background:#e74c3c;color:#fff}.tabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid #ddd}.tab{padding:10px 16px;cursor:pointer;border:none;background:none;font-weight:500;color:#7f8c8d}.tab.active{color:#3498db;border-bottom:2px solid #3498db}.tab-content{display:none}.tab-content.active{display:block}.log{background:#2c3e50;color:#ecf0f1;padding:10px;border-radius:4px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:12px}.log .timestamp{color:#7f8c8d}.log .info{color:#3498db}.log .success{color:#2ecc71}.log .warning{color:#f1c40f}.log .bargain{color:#e74c3c;font-weight:700}.bargain-item{background:#fef9e7;border-left:4px solid #e74c3c;padding:10px;margin:5px 0;border-radius:4px}.bargain-item strong{display:block;margin-bottom:4px}.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0}.stat-box{background:#f8f9fa;padding:10px;border-radius:4px;text-align:center}.stat-box .value{font-size:20px;font-weight:600;color:#2c3e50}.stat-box .label{font-size:12px;color:#7f8c8d}.empty{color:#95a5a6;text-align:center;padding:20px}.help-text{font-size:12px;color:#95a5a6;margin-top:4px}.inline-actions{display:flex;gap:6px;flex-wrap:wrap}.header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}.logout-btn{background:#e74c3c;color:#fff;padding:6px 12px;border:none;border-radius:4px;cursor:pointer}
-
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f5f6fa}.container{max-width:1400px;margin:0 auto;padding:20px}.login-container{max-width:400px;margin:100px auto;background:#fff;border-radius:8px;padding:30px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.login-container h2{margin-top:0}.login-container input{width:100%;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px}.login-container button{width:100%;padding:12px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer}.login-container .error{color:#e74c3c;font-size:14px;margin-top:5px}.hidden{display:none}h1{font-weight:400;color:#2c3e50}.card{background:#fff;border-radius:8px;padding:20px;margin-bottom:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.flex{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.flex label{font-weight:500;min-width:80px}input,select{padding:8px 12px;border:1px solid #ddd;border-radius:4px;font-size:14px;background:#fff}input{flex:1;min-width:160px}button{padding:8px 16px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500}button:hover{background:#2980b9}button.secondary{background:#95a5a6}button.secondary:hover{background:#7f8c8d}button.danger{background:#e74c3c}button.danger:hover{background:#c0392b}button.success{background:#2ecc71}button.success:hover{background:#27ae60}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #ecf0f1}th{background:#f8f9fa;font-weight:600;color:#2c3e50}.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}.badge-active{background:#2ecc71;color:#fff}.badge-idle{background:#bdc3c7;color:#2c3e50}.badge-bargain{background:#e74c3c;color:#fff}.badge-push-on{background:#3498db;color:#fff}.badge-push-off{background:#95a5a6;color:#fff}.tabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid #ddd}.tab{padding:10px 16px;cursor:pointer;border:none;background:none;font-weight:500;color:#7f8c8d}.tab.active{color:#3498db;border-bottom:2px solid #3498db}.tab-content{display:none}.tab-content.active{display:block}.log{background:#2c3e50;color:#ecf0f1;padding:10px;border-radius:4px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:12px}.log .timestamp{color:#7f8c8d}.log .info{color:#3498db}.log .success{color:#2ecc71}.log .warning{color:#f1c40f}.log .bargain{color:#e74c3c;font-weight:700}.bargain-item{background:#fef9e7;border-left:4px solid #e74c3c;padding:10px;margin:5px 0;border-radius:4px}.bargain-item strong{display:block;margin-bottom:4px}.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0}.stat-box{background:#f8f9fa;padding:10px;border-radius:4px;text-align:center}.stat-box .value{font-size:20px;font-weight:600;color:#2c3e50}.stat-box .label{font-size:12px;color:#7f8c8d}.empty{color:#95a5a6;text-align:center;padding:20px}.help-text{font-size:12px;color:#95a5a6;margin-top:4px}.inline-actions{display:flex;gap:6px;flex-wrap:wrap}.header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}.logout-btn{background:#e74c3c;color:#fff;padding:6px 12px;border:none;border-radius:4px;cursor:pointer}
+.push-card{background:#e8f4fd;border:1px solid #b8d4e8;border-radius:8px;padding:15px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:15px;margin-bottom:20px}
+.push-card .status{display:flex;align-items:center;gap:10px}
+.push-card .instructions{font-size:14px;color:#2c3e50;background:#fff;padding:10px 15px;border-radius:6px;border-left:4px solid #3498db;width:100%;margin-top:8px;display:none}
+.push-card .instructions.show{display:block}
+.push-card .instructions strong{color:#e67e22}
 .password-popup-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;backdrop-filter:blur(4px)}
 .password-popup{background:#fff;border-radius:16px;padding:40px;max-width:500px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.5);animation:popIn 0.3s ease-out}
 .password-popup h2{color:#e74c3c;margin-top:0;font-size:28px}
@@ -370,6 +522,23 @@ const HTML = `<!DOCTYPE html>
 <h1>Vinted Price Monitor</h1>
 <div><span id="userDisplay"></span> <button class="logout-btn" id="logoutBtn">Logout</button></div>
 </div>
+
+<!-- PUSH NOTIFICATION CARD -->
+<div class="push-card" id="pushCard">
+  <div class="status">
+    <span id="pushStatusIcon">🔔</span>
+    <span id="pushStatusText">Notifications: Checking...</span>
+    <span id="pushStatusBadge" class="badge badge-push-off">Off</span>
+  </div>
+  <div>
+    <button id="enablePushBtn" class="success">🔔 Enable Notifications</button>
+    <button id="refreshPushBtn" class="secondary" style="display:none;">🔄 Refresh</button>
+  </div>
+  <div id="pushInstructions" class="instructions">
+    <strong>📱 Device instructions:</strong> <span id="deviceInstructions">Loading...</span>
+  </div>
+</div>
+
 <div class="card">
 <h3>Add Search Term</h3>
 <div class="flex">
@@ -393,8 +562,13 @@ const HTML = `<!DOCTYPE html>
 </div>
 
 <script>
+// ─── VAPID public key (injected from server) ──────────────────────
+const VAPID_PUBLIC_KEY = '${VAPID_PUBLIC_KEY}';
+
 let userId = null;
 let bargains = {};
+let pushSubscription = null;
+let swRegistration = null;
 const API_BASE = window.location.origin;
 
 const loginScreen = document.getElementById('loginScreen');
@@ -407,6 +581,13 @@ const userDisplay = document.getElementById('userDisplay');
 const termLimitWarning = document.getElementById('termLimitWarning');
 const passwordPopup = document.getElementById('passwordPopup');
 const dismissPopup = document.getElementById('dismissPopup');
+const enablePushBtn = document.getElementById('enablePushBtn');
+const refreshPushBtn = document.getElementById('refreshPushBtn');
+const pushStatusText = document.getElementById('pushStatusText');
+const pushStatusBadge = document.getElementById('pushStatusBadge');
+const pushStatusIcon = document.getElementById('pushStatusIcon');
+const pushInstructions = document.getElementById('pushInstructions');
+const deviceInstructions = document.getElementById('deviceInstructions');
 
 const urlParams = new URLSearchParams(window.location.search);
 const referral = urlParams.get('referral');
@@ -422,6 +603,7 @@ dismissPopup.addEventListener('click', () => {
   window.history.pushState({}, '', newUrl);
 });
 
+// ─── Auth helpers ──────────────────────────────────────────────────────
 async function authFetch(url, options = {}) {
   const headers = { ...options.headers, 'X-User-Id': userId };
   return fetch(url, { ...options, headers });
@@ -459,6 +641,9 @@ function logout() {
   loginError.textContent = '';
   if (window.pollInterval) clearInterval(window.pollInterval);
   if (ws) ws.close();
+  if (pushSubscription) {
+    pushSubscription.unsubscribe().catch(console.error);
+  }
 }
 
 function showDashboard() {
@@ -469,12 +654,16 @@ function showDashboard() {
   fetchData();
   if (window.pollInterval) clearInterval(window.pollInterval);
   window.pollInterval = setInterval(fetchData, 3000);
+  // Initialize push after login
+  initPushNotifications();
 }
 
+// ─── WebSocket ──────────────────────────────────────────────────────────
 let ws = null;
 function initWebSocket() {
   if (ws) ws.close();
-  ws = new WebSocket('ws://' + window.location.host);
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(protocol + '//' + window.location.host);
   ws.onopen = () => ws.send(JSON.stringify({ type: 'register-frontend', userId }));
   ws.onmessage = (e) => {
     const d = JSON.parse(e.data);
@@ -488,6 +677,130 @@ function initWebSocket() {
   ws.onclose = () => setTimeout(initWebSocket, 5000);
 }
 
+// ─── Push Notifications ────────────────────────────────────────────────
+async function initPushNotifications() {
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    setPushStatus('❌', 'Not supported in this browser', 'badge-push-off');
+    enablePushBtn.style.display = 'none';
+    return;
+  }
+
+  try {
+    swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    console.log('Service Worker registered');
+
+    // Check permission
+    const perm = Notification.permission;
+    if (perm === 'granted') {
+      // Check if already subscribed
+      const sub = await swRegistration.pushManager.getSubscription();
+      if (sub) {
+        pushSubscription = sub;
+        setPushStatus('✅', 'Notifications enabled', 'badge-push-on');
+        enablePushBtn.textContent = '✅ Enabled';
+        enablePushBtn.disabled = true;
+        // Send subscription to server
+        await sendSubscriptionToServer(sub);
+        return;
+      } else {
+        setPushStatus('🔔', 'Click enable to get alerts', 'badge-push-off');
+        enablePushBtn.style.display = 'inline-block';
+      }
+    } else if (perm === 'denied') {
+      setPushStatus('🚫', 'Notifications blocked by browser', 'badge-push-off');
+      enablePushBtn.style.display = 'none';
+      showDeviceInstructions(true); // show manual fix
+      return;
+    } else {
+      setPushStatus('🔔', 'Click enable to get alerts', 'badge-push-off');
+      enablePushBtn.style.display = 'inline-block';
+    }
+  } catch (err) {
+    console.error('Push init error:', err);
+    setPushStatus('⚠️', 'Error: ' + err.message, 'badge-push-off');
+  }
+}
+
+function setPushStatus(icon, text, badgeClass) {
+  pushStatusIcon.textContent = icon;
+  pushStatusText.textContent = text;
+  pushStatusBadge.className = 'badge ' + badgeClass;
+  pushStatusBadge.textContent = text.includes('enabled') ? 'On' : 'Off';
+}
+
+function showDeviceInstructions(force = false) {
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/.test(navigator.userAgent);
+  
+  let msg = '';
+  if (isIOS) {
+    msg = '📱 <strong>iPhone / iPad:</strong> Tap the Share button (square with arrow), then select <strong>"Add to Home Screen"</strong>. Open the app from your home screen, then tap "Enable Notifications".';
+  } else if (isAndroid) {
+    msg = '📱 <strong>Android:</strong> Tap "Enable Notifications" and then tap <strong>"Allow"</strong> on the browser prompt.';
+  } else {
+    msg = '💻 <strong>Desktop:</strong> Tap "Enable Notifications" and then click <strong>"Allow"</strong> on the browser prompt.';
+  }
+  deviceInstructions.innerHTML = msg;
+  if (force || Notification.permission === 'denied' || Notification.permission === 'default') {
+    pushInstructions.classList.add('show');
+  } else {
+    pushInstructions.classList.remove('show');
+  }
+}
+
+enablePushBtn.addEventListener('click', async () => {
+  if (!userId) return;
+  if (!swRegistration) {
+    try {
+      swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    } catch (e) {
+      alert('Service Worker registration failed. Please reload.');
+      return;
+    }
+  }
+
+  // Request permission
+  let perm = Notification.permission;
+  if (perm === 'default') {
+    perm = await Notification.requestPermission();
+  }
+  if (perm !== 'granted') {
+    alert('Permission denied. You can enable it manually in browser settings.');
+    showDeviceInstructions(true);
+    return;
+  }
+
+  // Subscribe
+  try {
+    const sub = await swRegistration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: VAPID_PUBLIC_KEY
+    });
+    pushSubscription = sub;
+    await sendSubscriptionToServer(sub);
+    setPushStatus('✅', 'Notifications enabled!', 'badge-push-on');
+    enablePushBtn.textContent = '✅ Enabled';
+    enablePushBtn.disabled = true;
+    pushInstructions.classList.remove('show');
+    addLog('Push notifications enabled', 'success');
+  } catch (err) {
+    console.error('Subscribe error:', err);
+    alert('Failed to subscribe: ' + err.message);
+  }
+});
+
+async function sendSubscriptionToServer(sub) {
+  const res = await authFetch(API_BASE + '/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(sub)
+  });
+  if (!res.ok) {
+    console.error('Failed to send subscription to server');
+  }
+}
+
+// ─── Render functions ──────────────────────────────────────────────────
 function renderAll(data) {
   renderTerms(data.terms);
   renderWorkers(data.clients, data.active);
@@ -501,6 +814,12 @@ function renderAll(data) {
     termLimitWarning.style.display = 'block';
   } else {
     termLimitWarning.style.display = 'none';
+  }
+  // Update push status from server (if user has subscription)
+  if (data.pushEnabled) {
+    setPushStatus('✅', 'Notifications enabled', 'badge-push-on');
+    enablePushBtn.textContent = '✅ Enabled';
+    enablePushBtn.disabled = true;
   }
 }
 
@@ -651,6 +970,7 @@ async function fetchData() {
   } catch (e) { console.error(e); }
 }
 
+// ─── Event listeners ──────────────────────────────────────────────────
 document.getElementById('addBtn').addEventListener('click', async () => {
   const termInput = document.getElementById('newTerm');
   const thresholdInput = document.getElementById('threshold');
@@ -698,6 +1018,11 @@ document.querySelectorAll('.tab').forEach(tab => {
 });
 
 addLog('Dashboard ready. Please log in.', 'info');
+
+// Show device instructions on load if not enabled
+setTimeout(() => {
+  showDeviceInstructions(false);
+}, 1000);
 </script>
 </body>
 </html>`;
@@ -736,7 +1061,7 @@ app.post('/login', async (req, res) => {
 
 // ─── Middleware: require user ID header ──────────────────────────────
 app.use((req, res, next) => {
-  if (req.path === '/login' || req.path === '/' || req.path === '/referral') return next();
+  if (req.path === '/login' || req.path === '/' || req.path === '/referral' || req.path === '/sw.js') return next();
   const userId = req.headers['x-user-id'];
   if (!userId || !sessions.has(userId)) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -763,8 +1088,25 @@ app.get('/status', (req, res) => {
     clients: clients.size,
     active: Array.from(activeJobs.values()).filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
     queue: jobQueue.filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
-    bargains: userData.bargains
+    bargains: userData.bargains,
+    pushEnabled: loadPushSubscriptions(userId).length > 0
   });
+});
+
+// POST /subscribe (push subscription)
+app.post('/subscribe', (req, res) => {
+  const userId = req.userId;
+  const subscription = req.body;
+  if (!subscription || !subscription.endpoint) {
+    return res.status(400).json({ error: 'Invalid subscription' });
+  }
+  let subs = loadPushSubscriptions(userId);
+  // Avoid duplicates
+  subs = subs.filter(s => s.endpoint !== subscription.endpoint);
+  subs.push(subscription);
+  savePushSubscriptions(userId, subs);
+  console.log(`Push subscription saved for user ${userId}`);
+  res.json({ success: true });
 });
 
 // POST /terms
@@ -799,6 +1141,8 @@ app.delete('/terms/:term', (req, res) => {
   userData.terms.splice(idx, 1);
   saveUserTerms(userId, userData.terms);
   delete userData.bargains[term];
+  delete userData.notified[term];
+  saveNotified(userId, userData.notified);
   broadcastUpdate(userId);
   res.json({ success: true });
 });
@@ -1077,7 +1421,7 @@ setInterval(() => {
 // ─── Start server ──────────────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\n' + '='.repeat(60));
-  console.log('Vinted Price Monitor Server');
+  console.log('Vinted Price Monitor Server (with Push Notifications)');
   console.log('='.repeat(60));
   console.log('HTTP: http://localhost:' + PORT);
   console.log('WebSocket: ws://localhost:' + PORT);
@@ -1085,5 +1429,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('Persistent storage: ' + (process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'));
   console.log('Membership sync interval: ' + MEMBERSHIP_SYNC_INTERVAL/1000 + 's');
   console.log('Referral route: /referral?referral=YOUR_CODE');
+  console.log('VAPID Public Key: ' + VAPID_PUBLIC_KEY.substring(0, 30) + '...');
   console.log('='.repeat(60) + '\n');
 });
