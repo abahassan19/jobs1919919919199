@@ -7,8 +7,8 @@ const http = require('http');
 const { createClient } = require('@supabase/supabase-js');
 
 // ─── Supabase config ──────────────────────────────────────────────────
-const SUPABASE_URL = 'https://wxtkdejncsumglqpytzy.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind4dGtkZWpuY3N1bWdscXB5dHp5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1MDEyODQsImV4cCI6MjEwMTA3NzI4NH0.gM-hyPEZvwby43_5efR5W2WFDz8xb76nFGEHo9o7Q38';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ─── Server config ────────────────────────────────────────────────────
