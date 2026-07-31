@@ -15,6 +15,7 @@
     "@supabase/supabase-js": "^2.111.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
+    "web-push": "^3.6.7",
     "ws": "^8.21.1"
   }
 }
