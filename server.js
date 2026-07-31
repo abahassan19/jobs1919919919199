@@ -16,9 +16,9 @@ console.log(`Data directory: ${BASE_DIR}`);
 console.log(`Persistent storage: ${process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'}`);
 
 // ─── State ──────────────────────────────────────────────────────────────
-let searchTerms = [];                 // { term, averagePrice, thresholdPercent, interval }
+let searchTerms = [];                 // { term, averagePrice, thresholdPercent, interval, scanning }
 let clients = new Map();              // clientId -> { ws, busy, lastPing }
-let jobQueue = [];                   // { term, type }  type = 'scan_new' or 'scan_all'
+let jobQueue = [];                   // { term, type }  type = 'scan_all' or 'scan_new'
 let activeJobs = new Map();           // term -> { clientId, jobId, startTime, type }
 let bargains = {};
 let frontendClients = new Set();
@@ -62,36 +62,28 @@ function saveUnique(term, uniqueListings) {
 // ─── Price analysis ────────────────────────────────────────────────────
 function analyzePrices(listings, averagePrice, thresholdPercent) {
   if (!listings || listings.length === 0) return { bargains: [], stats: null };
-  if (!averagePrice) return { bargains: [], stats: null }; // no average set
+  if (!averagePrice) return { bargains: [], stats: null };
 
-  const prices = listings
-    .map(l => parseFloat(l.price.replace(/[^0-9.]/g, '')))
-    .filter(p => !isNaN(p) && p > 0);
-  if (prices.length === 0) return { bargains: [], stats: null };
-  
-  const avg = averagePrice;
   const threshold = thresholdPercent || 20;
-  
   const bargains = listings.filter(l => {
     const price = parseFloat(l.price.replace(/[^0-9.]/g, ''));
     if (isNaN(price)) return false;
-    const discount = ((avg - price) / avg) * 100;
+    const discount = ((averagePrice - price) / averagePrice) * 100;
     return discount >= threshold;
   }).map(l => {
     const price = parseFloat(l.price.replace(/[^0-9.]/g, ''));
-    const discount = ((avg - price) / avg) * 100;
+    const discount = ((averagePrice - price) / averagePrice) * 100;
     return { ...l, discount: Math.round(discount * 100) / 100 };
   });
   
   return {
     bargains: bargains.sort((a, b) => b.discount - a.discount),
-    stats: { average: avg, threshold, totalListings: listings.length, bargainCount: bargains.length }
+    stats: { average: averagePrice, threshold, totalListings: listings.length, bargainCount: bargains.length }
   };
 }
 
-// ─── Process scraped data ─────────────────────────────────────────────
 function processScrapedListings(term, scraped, jobType) {
-  // For scan_all: compute average from scraped data, don't save or detect bargains
+  // For scan_all: compute average and store it; do not save history
   if (jobType === 'scan_all') {
     const prices = scraped
       .map(l => parseFloat(l.price.replace(/[^0-9.]/g, '')))
@@ -122,9 +114,9 @@ function processScrapedListings(term, scraped, jobType) {
   saveHistory(term, updated);
   saveUnique(term, newListings);
 
-  // Only detect bargains if average is set (not null)
+  // Detect bargains only if average is set
   const termConfig = searchTerms.find(t => t.term === term);
-  if (termConfig && termConfig.averagePrice !== null && termConfig.averagePrice !== undefined) {
+  if (termConfig && termConfig.averagePrice) {
     const analysis = analyzePrices(updated, termConfig.averagePrice, termConfig.thresholdPercent);
     if (analysis.bargains.length > 0) {
       bargains[term] = analysis.bargains;
@@ -159,20 +151,6 @@ function broadcastUpdate() {
 }
 
 // ─── Job queue ──────────────────────────────────────────────────────────
-function scheduleJobs() {
-  const activeTerms = new Set(searchTerms.map(t => t.term));
-  jobQueue = jobQueue.filter(job => activeTerms.has(job.term));
-  
-  for (const termObj of searchTerms) {
-    const term = termObj.term;
-    // Only queue scan_new if not already active or queued
-    if (!activeJobs.has(term) && !jobQueue.some(j => j.term === term && j.type === 'scan_new')) {
-      jobQueue.push({ term, type: 'scan_new' });
-    }
-  }
-  processQueue();
-}
-
 function processQueue() {
   if (jobQueue.length === 0) return;
   
@@ -184,12 +162,9 @@ function processQueue() {
       break;
     }
   }
-  if (!availableClient) {
-    console.log('No available clients, waiting...');
-    return;
-  }
+  if (!availableClient) return;
   
-  // Find a job whose term is not currently active
+  // Find the first job whose term is not already active
   let jobIndex = -1;
   for (let i = 0; i < jobQueue.length; i++) {
     if (!activeJobs.has(jobQueue[i].term)) {
@@ -197,10 +172,7 @@ function processQueue() {
       break;
     }
   }
-  if (jobIndex === -1) {
-    console.log('All queued terms are already active, waiting...');
-    return;
-  }
+  if (jobIndex === -1) return;
   
   const job = jobQueue.splice(jobIndex, 1)[0];
   const clientInfo = clients.get(availableClient);
@@ -219,6 +191,14 @@ function processQueue() {
   broadcastUpdate();
 }
 
+function queueJob(term, type) {
+  // Avoid duplicates
+  if (jobQueue.some(j => j.term === term && j.type === type)) return;
+  if (activeJobs.has(term) && activeJobs.get(term).type === type) return;
+  jobQueue.push({ term, type });
+  processQueue();
+}
+
 // ─── Express app ──────────────────────────────────────────────────────
 const app = express();
 app.use(cors());
@@ -233,7 +213,7 @@ const HTML = `<!DOCTYPE html>
   <title>Vinted Price Monitor</title>
   <style>
     * { box-sizing: border-box; }
-    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #f5f6fa; }
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f5f6fa; }
     .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
     h1 { font-weight: 400; color: #2c3e50; }
     .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
@@ -247,6 +227,8 @@ const HTML = `<!DOCTYPE html>
     button.secondary:hover { background: #7f8c8d; }
     button.danger { background: #e74c3c; }
     button.danger:hover { background: #c0392b; }
+    button.success { background: #2ecc71; }
+    button.success:hover { background: #27ae60; }
     table { width: 100%; border-collapse: collapse; margin-top: 10px; }
     th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #ecf0f1; }
     th { background: #f8f9fa; font-weight: 600; color: #2c3e50; }
@@ -393,6 +375,9 @@ const HTML = `<!DOCTYPE html>
     terms.forEach(t => {
       const status = t.active ? '<span class="badge badge-active">Scanning</span>' : '<span class="badge badge-idle">Idle</span>';
       const avgDisplay = t.averagePrice ? '£' + t.averagePrice : 'Not set';
+      const scanBtn = t.averagePrice ? 
+        `<button class="success" data-action="scan" data-term="${t.term}">Start Scanning</button>` :
+        `<button class="secondary" data-action="avg" data-term="${t.term}">Calc Average</button>`;
       html += '<tr>'
         + '<td><strong>' + t.term + '</strong></td>'
         + '<td>' + avgDisplay + '</td>'
@@ -402,7 +387,7 @@ const HTML = `<!DOCTYPE html>
         + '<td>' + (t.listingCount || 0) + '</td>'
         + '<td>' + (t.bargainCount || 0) + '</td>'
         + '<td class="inline-actions">'
-        + '<button class="secondary" data-action="avg" data-term="' + t.term + '">Calc Average</button>'
+        + scanBtn
         + '<button class="danger" data-action="remove" data-term="' + t.term + '">Remove</button>'
         + '</td>'
         + '</tr>';
@@ -435,6 +420,24 @@ const HTML = `<!DOCTYPE html>
           fetchData();
         } else {
           alert(data.error || 'Failed to start calculation');
+        }
+      });
+    });
+
+    c.querySelectorAll('[data-action="scan"]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const term = btn.dataset.term;
+        const res = await fetch(API_BASE + '/start-scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ term })
+        });
+        const data = await res.json();
+        if (data.success) {
+          addLog('Scanning started for "' + term + '"', 'success');
+          fetchData();
+        } else {
+          alert(data.error || 'Failed to start scanning');
         }
       });
     });
@@ -568,9 +571,6 @@ app.post('/terms', (req, res) => {
   const obj = { term, averagePrice: null, thresholdPercent: parseInt(thresholdPercent), interval: parseInt(interval) };
   searchTerms.push(obj);
   saveTerms();
-  // Schedule a scan_new job immediately
-  jobQueue.push({ term, type: 'scan_new' });
-  processQueue();
   broadcastUpdate();
   res.json({ success: true, term: obj });
 });
@@ -594,18 +594,35 @@ app.post('/calculate-average', (req, res) => {
   const termObj = searchTerms.find(t => t.term === term);
   if (!termObj) return res.status(404).json({ error: 'Term not found' });
   
-  // Check if there's already a scan_all job for this term in queue or active
-  const alreadyQueued = jobQueue.some(j => j.term === term && j.type === 'scan_all');
-  const alreadyActive = activeJobs.has(term) && activeJobs.get(term).type === 'scan_all';
-  if (alreadyQueued || alreadyActive) {
+  // Check if already queued or active
+  if (jobQueue.some(j => j.term === term && j.type === 'scan_all')) {
+    return res.status(409).json({ error: 'Average calculation already queued' });
+  }
+  if (activeJobs.has(term) && activeJobs.get(term).type === 'scan_all') {
     return res.status(409).json({ error: 'Average calculation already in progress' });
   }
   
-  // Push scan_all to the front of the queue
-  jobQueue.unshift({ term, type: 'scan_all' });
-  processQueue();
-  broadcastUpdate();
-  res.json({ success: true, message: 'Average calculation started' });
+  queueJob(term, 'scan_all');
+  res.json({ success: true });
+});
+
+app.post('/start-scan', (req, res) => {
+  const { term } = req.body;
+  if (!term) return res.status(400).json({ error: 'Missing term' });
+  const termObj = searchTerms.find(t => t.term === term);
+  if (!termObj) return res.status(404).json({ error: 'Term not found' });
+  if (!termObj.averagePrice) {
+    return res.status(400).json({ error: 'Average price not set. Please calculate average first.' });
+  }
+  // Queue a scan_new job
+  if (jobQueue.some(j => j.term === term && j.type === 'scan_new')) {
+    return res.status(409).json({ error: 'Scan already queued' });
+  }
+  if (activeJobs.has(term) && activeJobs.get(term).type === 'scan_new') {
+    return res.status(409).json({ error: 'Scan already in progress' });
+  }
+  queueJob(term, 'scan_new');
+  res.json({ success: true });
 });
 
 app.get('/searches', (req, res) => {
@@ -632,7 +649,6 @@ wss.on('connection', (ws, req) => {
   ws.on('message', (msg) => {
     try {
       const data = JSON.parse(msg);
-      console.log(`Received: ${data.type} from ${clientId || 'unregistered'}`);
       
       switch (data.type) {
         case 'register-frontend':
@@ -661,20 +677,15 @@ wss.on('connection', (ws, req) => {
           
           console.log(`Job complete for "${term}" (${jobType || 'scan_new'}) from ${clientId}`);
           
-          // Process based on job type
           const result = processScrapedListings(term, listings, jobType || 'scan_new');
           
-          // Mark client as not busy
           if (clientId && clients.has(clientId)) {
             clients.get(clientId).busy = false;
           }
-          
-          // Remove from active jobs
           if (activeJobs.has(term)) {
             activeJobs.delete(term);
           }
           
-          // Acknowledge
           ws.send(JSON.stringify({
             type: 'job-complete-ack',
             term,
@@ -684,8 +695,8 @@ wss.on('connection', (ws, req) => {
           
           console.log(`Job complete for "${term}" - added ${result.added || 0} new`);
           
-          // Schedule next jobs
-          scheduleJobs();
+          // Process next job
+          processQueue();
           broadcastUpdate();
           break;
         }
@@ -694,17 +705,14 @@ wss.on('connection', (ws, req) => {
           const { term, error, jobType } = data;
           console.log(`Job failed for "${term}" (${jobType || 'scan_new'}) from ${clientId}: ${error}`);
           
-          // Mark client as not busy
           if (clientId && clients.has(clientId)) {
             clients.get(clientId).busy = false;
           }
-          
-          // Remove from active jobs
           if (activeJobs.has(term)) {
             activeJobs.delete(term);
           }
           
-          // Re-add to queue if it was a scan_new job (scan_all should not retry automatically)
+          // Re-queue only if it was a scan_new (scan_all failures are not retried automatically)
           const type = jobType || 'scan_new';
           if (type === 'scan_new' && !jobQueue.some(j => j.term === term && j.type === 'scan_new')) {
             jobQueue.push({ term, type: 'scan_new' });
@@ -738,7 +746,6 @@ wss.on('connection', (ws, req) => {
       return;
     }
     if (clientId) {
-      // Find any active job for this client
       let lostTerm = null;
       for (const [term, job] of activeJobs) {
         if (job.clientId === clientId) {
@@ -750,7 +757,6 @@ wss.on('connection', (ws, req) => {
       clients.delete(clientId);
       console.log(`Worker disconnected: ${clientId} (${clients.size} remaining) code ${code}`);
       if (lostTerm) {
-        // Re-queue scan_new only
         if (!jobQueue.some(j => j.term === lostTerm && j.type === 'scan_new')) {
           jobQueue.push({ term: lostTerm, type: 'scan_new' });
         }
@@ -777,11 +783,13 @@ setInterval(() => {
   }
 }, 10000);
 
-// ─── Scheduler ─────────────────────────────────────────────────────────
+// ─── Scheduler (only runs for terms that have average set and are marked as scanning) ──────
 setInterval(() => {
   for (const termObj of searchTerms) {
+    if (!termObj.averagePrice) continue; // only scan if average is set
     const term = termObj.term;
     const interval = termObj.interval || 5;
+    // Check if we should schedule a scan_new job
     if (!activeJobs.has(term) && !jobQueue.some(j => j.term === term && j.type === 'scan_new')) {
       const history = loadHistory(term);
       if (history.length > 0) {
@@ -792,8 +800,9 @@ setInterval(() => {
           console.log(`Scheduling scan_new for "${term}" (last ${Math.round(mins)}m ago)`);
         }
       } else {
+        // First time scanning
         jobQueue.push({ term, type: 'scan_new' });
-        console.log(`Scheduling scan_new for "${term}" (first scan)`);
+        console.log(`Scheduling first scan_new for "${term}"`);
       }
     }
   }
@@ -804,7 +813,7 @@ setInterval(() => {
 // ─── Start server ──────────────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n${'='.repeat(60)}`);
-  console.log(`Vinted Price Monitor Server`);
+  console.log(`Vinted Price Monitor Server (Final)`);
   console.log(`${'='.repeat(60)}`);
   console.log(`HTTP: http://localhost:${PORT}`);
   console.log(`WebSocket: ws://localhost:${PORT}`);
@@ -814,7 +823,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`${'='.repeat(60)}\n`);
   
   setTimeout(() => {
-    scheduleJobs();
     broadcastUpdate();
-  }, 2000);
+  }, 1000);
 });
