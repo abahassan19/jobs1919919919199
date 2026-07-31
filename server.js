@@ -6,32 +6,38 @@ const WebSocket = require('ws');
 const http = require('http');
 
 const PORT = process.env.PORT || 3000;
-const SEARCHES_DIR = path.join(__dirname, 'searches');
+const BASE_DIR = process.env.RENDER_PERSISTENT_DISK || __dirname;
+const SEARCHES_DIR = path.join(BASE_DIR, 'searches');
+const TERMS_FILE = path.join(BASE_DIR, 'terms.json');
 
 // Ensure directories
 if (!fs.existsSync(SEARCHES_DIR)) fs.mkdirSync(SEARCHES_DIR, { recursive: true });
 
-// ─── State ──────────────────────────────────────────────────────────────
-let searchTerms = [];
-let clients = new Map();
-let jobQueue = [];
-let activeJobs = new Map();
-let bargains = {};
-let scrapedHistory = {};
-let frontendClients = new Set();
+console.log(`📂 Data directory: ${BASE_DIR}`);
+console.log(`💾 Persistent storage: ${process.env.RENDER_PERSISTENT_DISK ? '✅ ENABLED' : '❌ DISABLED (ephemeral)'}`);
 
-const TERMS_FILE = path.join(__dirname, 'terms.json');
+// ─── State ──────────────────────────────────────────────────────────────
+let searchTerms = [];                 // array of { term, averagePrice, thresholdPercent, interval }
+let clients = new Map();              // clientId -> { ws, busy, lastPing }
+let jobQueue = [];                   // array of term strings waiting for a worker
+let activeJobs = new Map();           // term -> { clientId, jobId, startTime }
+let bargains = {};                   // term -> [ bargain listings ]
+let scrapedHistory = {};             // term -> { listings, unique }
+let frontendClients = new Set();     // WebSocket connections from browsers
 
 // Load persisted terms
 if (fs.existsSync(TERMS_FILE)) {
-  try { searchTerms = JSON.parse(fs.readFileSync(TERMS_FILE, 'utf8')); } catch (_) { searchTerms = []; }
+  try {
+    searchTerms = JSON.parse(fs.readFileSync(TERMS_FILE, 'utf8'));
+    console.log(`📋 Loaded ${searchTerms.length} terms from disk`);
+  } catch (_) { searchTerms = []; }
 }
 
 function saveTerms() {
   fs.writeFileSync(TERMS_FILE, JSON.stringify(searchTerms, null, 2));
 }
 
-// ─── File helpers ──────────────────────────────────────────────────
+// ─── File helpers ──────────────────────────────────────────────────────
 function getResultsFile(term) {
   const safe = term.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_-]/g, '');
   return path.join(SEARCHES_DIR, `${safe}-results.json`);
@@ -75,7 +81,7 @@ function saveUnique(term, uniqueListings) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
 }
 
-// ─── Price analysis ─────────────────────────────────────────────────
+// ─── Price analysis ────────────────────────────────────────────────────
 function analyzePrices(listings, averagePrice, thresholdPercent) {
   if (!listings || listings.length === 0) return { bargains: [], stats: null };
   
@@ -126,10 +132,8 @@ function processScrapedListings(term, scraped) {
   saveHistory(term, updated);
   saveUnique(term, newListings);
   
-  // Store in memory
   scrapedHistory[term] = { listings: updated, unique: newListings };
   
-  // Analyze for bargains
   const termConfig = searchTerms.find(t => t.term === term);
   if (termConfig) {
     const analysis = analyzePrices(updated, termConfig.averagePrice, termConfig.thresholdPercent);
@@ -142,7 +146,7 @@ function processScrapedListings(term, scraped) {
   return { added: newListings.length, newListings };
 }
 
-// ─── Broadcast ────────────────────────────────────────────────────
+// ─── Broadcast functions ──────────────────────────────────────────────
 function broadcastBargains(term, bargainsList) {
   const message = JSON.stringify({
     type: 'bargain-alert',
@@ -162,7 +166,7 @@ function broadcastUpdate() {
     terms: searchTerms.map(t => ({
       ...t,
       active: activeJobs.has(t.term),
-      listingCount: scrapedHistory[t.term]?.listings?.length || 0,
+      listingCount: scrapedHistory[t.term]?.listings?.length || loadHistory(t.term).length,
       bargainCount: bargains[t.term]?.length || 0
     })),
     jobs: jobQueue,
@@ -177,7 +181,7 @@ function broadcastUpdate() {
   }
 }
 
-// ─── Job management ─────────────────────────────────────────────────
+// ─── Job queue management ────────────────────────────────────────────
 function scheduleJobs() {
   const activeTerms = new Set(searchTerms.map(t => t.term));
   jobQueue = jobQueue.filter(term => activeTerms.has(term));
@@ -194,6 +198,7 @@ function scheduleJobs() {
 function processQueue() {
   if (jobQueue.length === 0) return;
   
+  // Find an available worker
   let availableClient = null;
   for (let [id, info] of clients) {
     if (!info.busy && info.ws.readyState === WebSocket.OPEN) {
@@ -213,6 +218,7 @@ function processQueue() {
   const jobId = `${term}-${Date.now()}`;
   activeJobs.set(term, { clientId: availableClient, startTime: Date.now(), jobId });
   
+  // Send job to worker
   clientInfo.ws.send(JSON.stringify({
     type: 'job',
     term: term,
@@ -223,12 +229,12 @@ function processQueue() {
   broadcastUpdate();
 }
 
-// ─── Express app ────────────────────────────────────────────────────
+// ─── Express app ──────────────────────────────────────────────────────
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ─── Embedded Frontend ──────────────────────────────────────────────
+// ─── Embedded Frontend ────────────────────────────────────────────────
 const HTML = `<!DOCTYPE html>
 <html>
 <head>
@@ -243,16 +249,11 @@ const HTML = `<!DOCTYPE html>
     h1 small { font-size: 14px; font-weight: normal; color: #666; }
     .card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
     .flex { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-    input, select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-    input { flex: 1; min-width: 150px; }
+    input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; flex: 1; min-width: 150px; }
     button { padding: 8px 16px; background: #4a6cf7; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 14px; }
     button:hover { background: #3a5bd9; }
     button.danger { background: #dc3545; }
     button.danger:hover { background: #c82333; }
-    button.success { background: #28a745; }
-    button.success:hover { background: #218838; }
-    button.warning { background: #ffc107; color: #333; }
-    button.warning:hover { background: #e0a800; }
     button.small { padding: 4px 12px; font-size: 12px; }
     table { width: 100%; border-collapse: collapse; margin-top: 10px; }
     th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; }
@@ -260,7 +261,6 @@ const HTML = `<!DOCTYPE html>
     .badge { display: inline-block; padding: 3px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
     .badge-active { background: #28a745; color: white; }
     .badge-idle { background: #6c757d; color: white; }
-    .badge-busy { background: #ffc107; color: #333; }
     .badge-bargain { background: #dc3545; color: white; animation: pulse 1s infinite; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
     .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid #e0e0e0; flex-wrap: wrap; }
@@ -280,9 +280,7 @@ const HTML = `<!DOCTYPE html>
     .stat-box { background: #f8f9fa; padding: 10px; border-radius: 6px; text-align: center; }
     .stat-box .value { font-size: 20px; font-weight: bold; color: #1a1a2e; }
     .stat-box .label { font-size: 12px; color: #666; }
-    .term-status { display: flex; gap: 5px; flex-wrap: wrap; }
     .empty { color: #999; text-align: center; padding: 20px; }
-    @media (max-width: 768px) { .container { padding: 10px; } table { font-size: 12px; } th, td { padding: 6px; } }
   </style>
 </head>
 <body>
@@ -342,7 +340,6 @@ const HTML = `<!DOCTYPE html>
   const API_BASE = window.location.origin;
   let bargains = {};
 
-  // ─── Tabs ──────────────────────────────────────────────────────────
   document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -352,8 +349,8 @@ const HTML = `<!DOCTYPE html>
     });
   });
 
-  // ─── WebSocket ─────────────────────────────────────────────────────
   const ws = new WebSocket(\`ws://\${window.location.host}\`);
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'register-frontend' }));
   ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
     if (data.type === 'bargain-alert') {
@@ -375,7 +372,6 @@ const HTML = `<!DOCTYPE html>
     }
   }
 
-  // ─── Render Functions ─────────────────────────────────────────────
   function renderTerms(terms) {
     const container = document.getElementById('termContainer');
     if (!terms || terms.length === 0) {
@@ -462,7 +458,6 @@ const HTML = `<!DOCTYPE html>
     if (container.children.length > 100) container.removeChild(container.lastChild);
   }
 
-  // ─── API Calls ─────────────────────────────────────────────────────
   async function fetchData() {
     try {
       const res = await fetch(\`\${API_BASE}/status\`);
@@ -505,7 +500,6 @@ const HTML = `<!DOCTYPE html>
     }
   });
 
-  // Poll every 3 seconds
   setInterval(fetchData, 3000);
   fetchData();
   addLog('🚀 Dashboard started', 'info');
@@ -515,8 +509,9 @@ const HTML = `<!DOCTYPE html>
 
 app.get('/', (req, res) => res.send(HTML));
 
-// ─── API endpoints ─────────────────────────────────────────────────
+// ─── API endpoints ────────────────────────────────────────────────────
 
+// GET /status - full system status
 app.get('/status', (req, res) => {
   const termStatus = searchTerms.map(termObj => {
     const term = termObj.term;
@@ -539,6 +534,7 @@ app.get('/status', (req, res) => {
   });
 });
 
+// POST /terms - add a new term
 app.post('/terms', (req, res) => {
   const { term, averagePrice, thresholdPercent = 20, interval = 5 } = req.body;
   if (!term) return res.status(400).json({ error: 'Missing term' });
@@ -555,6 +551,7 @@ app.post('/terms', (req, res) => {
   searchTerms.push(termObj);
   saveTerms();
   
+  // Add to job queue immediately
   jobQueue.push(term);
   processQueue();
   broadcastUpdate();
@@ -562,6 +559,7 @@ app.post('/terms', (req, res) => {
   res.json({ success: true, term: termObj });
 });
 
+// DELETE /terms/:term - remove term
 app.delete('/terms/:term', (req, res) => {
   const term = req.params.term;
   const idx = searchTerms.findIndex(t => t.term === term);
@@ -570,6 +568,7 @@ app.delete('/terms/:term', (req, res) => {
   searchTerms.splice(idx, 1);
   saveTerms();
   
+  // Remove from queue and active jobs
   jobQueue = jobQueue.filter(t => t !== term);
   activeJobs.delete(term);
   delete bargains[term];
@@ -578,6 +577,7 @@ app.delete('/terms/:term', (req, res) => {
   res.json({ success: true });
 });
 
+// GET /searches - get search history
 app.get('/searches', (req, res) => {
   const { term, type } = req.query;
   if (!term) return res.status(400).json({ error: 'Missing term' });
@@ -602,42 +602,58 @@ app.get('/searches', (req, res) => {
     term, 
     type: type || 'all', 
     count: listings.length,
-    listings: listings.slice(0, 100), // Limit for performance
+    listings: listings.slice(0, 100),
     bargains: analysis?.bargains || [],
     stats: analysis?.stats || null
   });
 });
 
-// ─── WebSocket server ──────────────────────────────────────────────────
+// ─── HTTP Server + WebSocket ──────────────────────────────────────────
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ 
+  server,
+  // Allow all connections (Render proxy handles SSL)
+  clientTracking: true,
+});
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   let clientId = null;
   ws.isFrontend = false;
   
+  console.log(`🔌 New WebSocket connection from ${req.socket.remoteAddress}`);
+
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
+      console.log(`📩 Received: ${data.type} from ${clientId || 'unregistered'}`);
+      
       switch (data.type) {
-        case 'register-frontend':
+        case 'register-frontend': {
           ws.isFrontend = true;
           frontendClients.add(ws);
           console.log('🌐 Frontend client connected');
           broadcastUpdate();
           break;
-          
+        }
+        
         case 'register-worker': {
           clientId = data.clientId || `worker-${Date.now()}`;
+          
+          // Remove existing client with same ID if any
           if (clients.has(clientId)) {
             const old = clients.get(clientId);
             if (old.ws !== ws && old.ws.readyState === WebSocket.OPEN) {
               old.ws.close();
             }
           }
+          
           clients.set(clientId, { ws, busy: false, lastPing: Date.now() });
           console.log(`🤖 Worker registered: ${clientId} (${clients.size} total)`);
+          
+          // Send acknowledgment
           ws.send(JSON.stringify({ type: 'registered', clientId }));
+          
+          // Check if there are waiting jobs
           processQueue();
           broadcastUpdate();
           break;
@@ -647,16 +663,22 @@ wss.on('connection', (ws) => {
           const { term, listings, jobId } = data;
           if (!term || !listings) break;
           
+          console.log(`📥 Job complete for "${term}" from ${clientId}`);
+          
+          // Process the scraped data
           const result = processScrapedListings(term, listings);
           
+          // Mark client as not busy
           if (clientId && clients.has(clientId)) {
             clients.get(clientId).busy = false;
           }
           
+          // Remove from active jobs
           if (activeJobs.has(term)) {
             activeJobs.delete(term);
           }
           
+          // Acknowledge
           ws.send(JSON.stringify({
             type: 'job-complete-ack',
             term,
@@ -666,6 +688,7 @@ wss.on('connection', (ws) => {
           
           console.log(`✅ Job complete for "${term}" - added ${result.added} new listings`);
           
+          // Schedule next jobs
           scheduleJobs();
           broadcastUpdate();
           break;
@@ -673,41 +696,52 @@ wss.on('connection', (ws) => {
         
         case 'job-failed': {
           const { term, error } = data;
-          console.log(`❌ Job failed for "${term}": ${error}`);
+          console.log(`❌ Job failed for "${term}" from ${clientId}: ${error}`);
           
+          // Mark client as not busy
           if (clientId && clients.has(clientId)) {
             clients.get(clientId).busy = false;
           }
           
+          // Remove from active jobs
           if (activeJobs.has(term)) {
             activeJobs.delete(term);
           }
           
+          // Re-add to queue for retry
           if (!jobQueue.includes(term)) {
             jobQueue.push(term);
           }
           
+          // Process next job
           processQueue();
           broadcastUpdate();
           break;
         }
         
-        case 'ping':
+        case 'ping': {
           if (clientId && clients.has(clientId)) {
             clients.get(clientId).lastPing = Date.now();
           }
+          // Optionally respond with pong
+          ws.send(JSON.stringify({ type: 'pong' }));
           break;
+        }
+        
+        default:
+          console.log(`Unknown message type: ${data.type}`);
       }
     } catch (err) {
-      console.error('WebSocket error:', err);
+      console.error('WebSocket message error:', err);
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
     if (ws.isFrontend) {
       frontendClients.delete(ws);
       console.log('🌐 Frontend client disconnected');
     } else if (clientId) {
+      // Check if this worker had an active job
       let lostJob = null;
       for (let [term, job] of activeJobs) {
         if (job.clientId === clientId) {
@@ -717,7 +751,7 @@ wss.on('connection', (ws) => {
       }
       
       clients.delete(clientId);
-      console.log(`❌ Worker disconnected: ${clientId} (${clients.size} remaining)`);
+      console.log(`❌ Worker disconnected: ${clientId} (${clients.size} remaining) - code ${code}`);
       
       if (lostJob) {
         activeJobs.delete(lostJob);
@@ -725,32 +759,37 @@ wss.on('connection', (ws) => {
           jobQueue.push(lostJob);
         }
         console.log(`🔄 Re-queued job "${lostJob}" from disconnected worker`);
+        processQueue();
       }
       
-      processQueue();
       broadcastUpdate();
     }
   });
+
+  ws.on('error', (err) => {
+    console.error('WebSocket error:', err);
+  });
 });
 
-// ─── Heartbeat ────────────────────────────────────────────────────
+// ─── Heartbeat check for stale workers ──────────────────────────────
 setInterval(() => {
   const now = Date.now();
   for (let [id, info] of clients) {
     if (now - info.lastPing > 30000) {
-      console.log(`⚠️ Worker ${id} stale, closing`);
+      console.log(`⚠️ Worker ${id} stale, terminating`);
       info.ws.terminate();
       clients.delete(id);
     }
   }
 }, 10000);
 
-// ─── Job scheduler ──────────────────────────────────────────────────
+// ─── Job scheduler (runs every minute) ──────────────────────────────
 setInterval(() => {
   for (const termObj of searchTerms) {
     const term = termObj.term;
     const interval = termObj.interval || 5;
     
+    // Check if term needs scraping based on last seen time
     if (!activeJobs.has(term) && !jobQueue.includes(term)) {
       const history = loadHistory(term);
       if (history.length > 0) {
@@ -761,26 +800,30 @@ setInterval(() => {
           console.log(`⏰ Scheduling "${term}" (last scraped ${Math.round(minutesSince)}m ago)`);
         }
       } else {
+        // Never scraped, schedule immediately
         jobQueue.push(term);
         console.log(`⏰ Scheduling "${term}" for first scrape`);
       }
     }
   }
+  
   processQueue();
   broadcastUpdate();
-}, 60000);
+}, 60000); // Every minute
 
 // ─── Start server ──────────────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n${'='.repeat(60)}`);
-  console.log(`🚀 Vinted Scraper Central Server`);
+  console.log(`🚀 Vinted Scraper Central Server (Job-Queue)`);
   console.log(`${'='.repeat(60)}`);
   console.log(`📡 HTTP: http://localhost:${PORT}`);
   console.log(`🔌 WebSocket: ws://localhost:${PORT}`);
-  console.log(`📁 Search data: ${SEARCHES_DIR}`);
+  console.log(`📁 Data directory: ${BASE_DIR}`);
+  console.log(`💾 Persistent storage: ${process.env.RENDER_PERSISTENT_DISK ? '✅ ENABLED' : '❌ DISABLED'}`);
   console.log(`📊 ${searchTerms.length} terms loaded`);
   console.log(`${'='.repeat(60)}\n`);
   
+  // Initial job scheduling
   setTimeout(() => {
     scheduleJobs();
     broadcastUpdate();
