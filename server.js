@@ -15,46 +15,41 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const PORT = process.env.PORT || 3000;
 const BASE_DIR = process.env.RENDER_PERSISTENT_DISK || __dirname;
 const DATA_DIR = path.join(BASE_DIR, 'userdata');
-const TERMS_FILE = path.join(BASE_DIR, 'terms.json'); // legacy, not used
-
-// Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 console.log(`Data directory: ${DATA_DIR}`);
 console.log(`Persistent storage: ${process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'}`);
 
+// ─── Constants ──────────────────────────────────────────────────────
+const MASTER_ID = 'mastermaster1234';
+const MAX_TERMS = 30;
+const MAX_ATTEMPTS = 5;
+const LOCKOUT_MINUTES = 15;
+
 // ─── In‑memory state ──────────────────────────────────────────────────
-// Active sessions: userId -> { lastActive }
-const sessions = new Map();
-// User data cache: userId -> { terms: [], bargains: {} }
-const userCache = new Map();
-// Rate limiting: ip -> { attempts, firstAttempt, blockedUntil }
-const loginAttempts = new Map();
+const sessions = new Map();           // userId -> { lastActive, membership }
+const userCache = new Map();          // userId -> { terms, bargains }
+const loginAttempts = new Map();      // ip -> { attempts, firstAttempt, blockedUntil }
 
 // ─── User data helpers ──────────────────────────────────────────────
 function getUserDir(userId) {
   return path.join(DATA_DIR, userId);
 }
-
 function getTermsFile(userId) {
   return path.join(getUserDir(userId), 'terms.json');
 }
-
 function getResultsFile(userId, term) {
   const safe = term.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_-]/g, '');
   return path.join(getUserDir(userId), `${safe}-results.json`);
 }
-
 function getUniqueFile(userId, term) {
   const safe = term.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_-]/g, '');
   return path.join(getUserDir(userId), `${safe}-unique.json`);
 }
-
 function ensureUserDir(userId) {
   const dir = getUserDir(userId);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
-
 function loadUserTerms(userId) {
   const file = getTermsFile(userId);
   try {
@@ -65,13 +60,11 @@ function loadUserTerms(userId) {
   } catch (_) {}
   return [];
 }
-
 function saveUserTerms(userId, terms) {
   ensureUserDir(userId);
   const file = getTermsFile(userId);
   fs.writeFileSync(file, JSON.stringify({ terms }, null, 2), 'utf8');
 }
-
 function loadUserHistory(userId, term) {
   const file = getResultsFile(userId, term);
   try {
@@ -82,21 +75,18 @@ function loadUserHistory(userId, term) {
   } catch (_) {}
   return [];
 }
-
 function saveUserHistory(userId, term, listings) {
   ensureUserDir(userId);
   const file = getResultsFile(userId, term);
   const data = { searchTerm: term, lastUpdated: new Date().toISOString(), totalListings: listings.length, listings };
   fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
 }
-
 function saveUserUnique(userId, term, uniqueListings) {
   ensureUserDir(userId);
   const file = getUniqueFile(userId, term);
   const data = { searchTerm: term, lastUpdated: new Date().toISOString(), totalUniqueListings: uniqueListings.length, listings: uniqueListings };
   fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
 }
-
 function getUserData(userId) {
   if (!userCache.has(userId)) {
     userCache.set(userId, {
@@ -107,7 +97,7 @@ function getUserData(userId) {
   return userCache.get(userId);
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────
+// ─── Price analysis ──────────────────────────────────────────────────
 function analyzePrices(listings, averagePrice, thresholdPercent) {
   if (!listings || listings.length === 0 || !averagePrice) return { bargains: [], stats: null };
   const threshold = thresholdPercent || 20;
@@ -164,31 +154,13 @@ function processScrapedListings(userId, term, scraped, jobType) {
     const analysis = analyzePrices(updated, termConfig.averagePrice, termConfig.thresholdPercent);
     if (analysis.bargains.length > 0) {
       userData.bargains[term] = analysis.bargains;
-      // broadcast to frontend for this user later
+      broadcastBargains(userId, term, analysis.bargains);
     }
   }
   return { added: newListings.length, newListings };
 }
 
-// ─── Authentication middleware ──────────────────────────────────────
-function authenticate(req, res, next) {
-  const userId = req.headers['x-user-id'];
-  if (!userId || !sessions.has(userId)) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  // Update session last activity
-  sessions.set(userId, { lastActive: Date.now() });
-  req.userId = userId;
-  next();
-}
-
-// ─── Master auth (special ID) ──────────────────────────────────────
-const MASTER_ID = 'mastermaster1234';
-
-// ─── Rate limiting for login ────────────────────────────────────────
-const MAX_ATTEMPTS = 5;
-const LOCKOUT_MINUTES = 15;
-
+// ─── Rate limiting ──────────────────────────────────────────────────
 function checkRateLimit(ip) {
   const now = Date.now();
   const record = loginAttempts.get(ip);
@@ -196,16 +168,13 @@ function checkRateLimit(ip) {
     loginAttempts.set(ip, { attempts: 1, firstAttempt: now });
     return true;
   }
-  if (record.blockedUntil && now < record.blockedUntil) {
-    return false;
-  }
+  if (record.blockedUntil && now < record.blockedUntil) return false;
   if (record.blockedUntil && now >= record.blockedUntil) {
     loginAttempts.delete(ip);
     return true;
   }
   if (record.attempts >= MAX_ATTEMPTS) {
-    const blockedUntil = now + LOCKOUT_MINUTES * 60 * 1000;
-    record.blockedUntil = blockedUntil;
+    record.blockedUntil = now + LOCKOUT_MINUTES * 60 * 1000;
     loginAttempts.set(ip, record);
     return false;
   }
@@ -217,7 +186,7 @@ function checkRateLimit(ip) {
 // ─── Express app ──────────────────────────────────────────────────────
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
 // ─── Frontend HTML (login + dashboard) ──────────────────────────────
 const HTML = `<!DOCTYPE html>
@@ -227,7 +196,7 @@ const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Vinted Price Monitor</title>
 <style>
-*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f5f6fa}.container{max-width:1400px;margin:0 auto;padding:20px}.login-container{max-width:400px;margin:100px auto;background:#fff;border-radius:8px;padding:30px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.login-container h2{margin-top:0}.login-container input{width:100%;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px}.login-container button{width:100%;padding:12px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer}.login-container .error{color:#e74c3c;font-size:14px;margin-top:5px}.hidden{display:none}h1{font-weight:400;color:#2c3e50}.card{background:#fff;border-radius:8px;padding:20px;margin-bottom:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.flex{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.flex label{font-weight:500;min-width:80px}input,select{padding:8px 12px;border:1px solid #ddd;border-radius:4px;font-size:14px;background:#fff}input{flex:1;min-width:160px}button{padding:8px 16px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500}button:hover{background:#2980b9}button.secondary{background:#95a5a6}button.secondary:hover{background:#7f8c8d}button.danger{background:#e74c3c}button.danger:hover{background:#c0392b}button.success{background:#2ecc71}button.success:hover{background:#27ae60}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #ecf0f1}th{background:#f8f9fa;font-weight:600;color:#2c3e50}.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}.badge-active{background:#2ecc71;color:#fff}.badge-idle{background:#bdc3c7;color:#2c3e50}.badge-bargain{background:#e74c3c;color:#fff}.tabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid #ddd}.tab{padding:10px 16px;cursor:pointer;border:none;background:none;font-weight:500;color:#7f8c8d}.tab.active{color:#3498db;border-bottom:2px solid #3498db}.tab-content{display:none}.tab-content.active{display:block}.log{background:#2c3e50;color:#ecf0f1;padding:10px;border-radius:4px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:12px}.log .timestamp{color:#7f8c8d}.log .info{color:#3498db}.log .success{color:#2ecc71}.log .warning{color:#f1c40f}.log .bargain{color:#e74c3c;font-weight:700}.bargain-item{background:#fef9e7;border-left:4px solid #e74c3c;padding:10px;margin:5px 0;border-radius:4px}.bargain-item strong{display:block;margin-bottom:4px}.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0}.stat-box{background:#f8f9fa;padding:10px;border-radius:4px;text-align:center}.stat-box .value{font-size:20px;font-weight:600;color:#2c3e50}.stat-box .label{font-size:12px;color:#7f8c8d}.empty{color:#95a5a6;text-align:center;padding:20px}.help-text{font-size:12px;color:#95a5a6;margin-top:4px}.inline-actions{display:flex;gap:6px;flex-wrap:wrap}.header{display:flex;justify-content:space-between;align-items:center}.logout-btn{background:#e74c3c;color:#fff;padding:6px 12px;border:none;border-radius:4px;cursor:pointer}
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f5f6fa}.container{max-width:1400px;margin:0 auto;padding:20px}.login-container{max-width:400px;margin:100px auto;background:#fff;border-radius:8px;padding:30px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.login-container h2{margin-top:0}.login-container input{width:100%;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px}.login-container button{width:100%;padding:12px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer}.login-container .error{color:#e74c3c;font-size:14px;margin-top:5px}.hidden{display:none}h1{font-weight:400;color:#2c3e50}.card{background:#fff;border-radius:8px;padding:20px;margin-bottom:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.flex{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.flex label{font-weight:500;min-width:80px}input,select{padding:8px 12px;border:1px solid #ddd;border-radius:4px;font-size:14px;background:#fff}input{flex:1;min-width:160px}button{padding:8px 16px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500}button:hover{background:#2980b9}button.secondary{background:#95a5a6}button.secondary:hover{background:#7f8c8d}button.danger{background:#e74c3c}button.danger:hover{background:#c0392b}button.success{background:#2ecc71}button.success:hover{background:#27ae60}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #ecf0f1}th{background:#f8f9fa;font-weight:600;color:#2c3e50}.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}.badge-active{background:#2ecc71;color:#fff}.badge-idle{background:#bdc3c7;color:#2c3e50}.badge-bargain{background:#e74c3c;color:#fff}.tabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid #ddd}.tab{padding:10px 16px;cursor:pointer;border:none;background:none;font-weight:500;color:#7f8c8d}.tab.active{color:#3498db;border-bottom:2px solid #3498db}.tab-content{display:none}.tab-content.active{display:block}.log{background:#2c3e50;color:#ecf0f1;padding:10px;border-radius:4px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:12px}.log .timestamp{color:#7f8c8d}.log .info{color:#3498db}.log .success{color:#2ecc71}.log .warning{color:#f1c40f}.log .bargain{color:#e74c3c;font-weight:700}.bargain-item{background:#fef9e7;border-left:4px solid #e74c3c;padding:10px;margin:5px 0;border-radius:4px}.bargain-item strong{display:block;margin-bottom:4px}.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0}.stat-box{background:#f8f9fa;padding:10px;border-radius:4px;text-align:center}.stat-box .value{font-size:20px;font-weight:600;color:#2c3e50}.stat-box .label{font-size:12px;color:#7f8c8d}.empty{color:#95a5a6;text-align:center;padding:20px}.help-text{font-size:12px;color:#95a5a6;margin-top:4px}.inline-actions{display:flex;gap:6px;flex-wrap:wrap}.header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}.logout-btn{background:#e74c3c;color:#fff;padding:6px 12px;border:none;border-radius:4px;cursor:pointer}.master-actions{display:flex;gap:8px;margin:10px 0}.master-actions button{background:#f39c12;color:#fff}
 </style>
 </head>
 <body>
@@ -246,6 +215,12 @@ const HTML = `<!DOCTYPE html>
 <div class="header">
 <h1>Vinted Price Monitor</h1>
 <div><span id="userDisplay"></span> <button class="logout-btn" id="logoutBtn">Logout</button></div>
+</div>
+<!-- Master export/import buttons (hidden by default) -->
+<div id="masterActions" class="master-actions" style="display:none;">
+<button id="exportBtn">Export All Data</button>
+<button id="importBtn">Import Data</button>
+<input type="file" id="importFile" style="display:none;" accept=".json" />
 </div>
 <div class="card">
 <h3>Add Search Term</h3>
@@ -284,6 +259,10 @@ const loginBtn = document.getElementById('loginBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const userDisplay = document.getElementById('userDisplay');
 const termLimitWarning = document.getElementById('termLimitWarning');
+const masterActions = document.getElementById('masterActions');
+const exportBtn = document.getElementById('exportBtn');
+const importBtn = document.getElementById('importBtn');
+const importFile = document.getElementById('importFile');
 
 // ─── Helper: fetch with auth header ──────────────────────────────
 async function authFetch(url, options = {}) {
@@ -305,8 +284,7 @@ async function login() {
     const data = await res.json();
     if (res.ok) {
       userId = data.userId;
-      // Save to localStorage for autofill (browser will offer to save)
-      // but we also store it for session persistence
+      // Save to localStorage for autofill
       localStorage.setItem('vinted_userId', userId);
       showDashboard();
     } else {
@@ -325,6 +303,8 @@ function logout() {
   dashboard.classList.add('hidden');
   loginIdInput.value = '';
   loginError.textContent = '';
+  if (window.pollInterval) clearInterval(window.pollInterval);
+  if (ws) ws.close();
 }
 
 // ─── Show dashboard ──────────────────────────────────────────────────
@@ -332,10 +312,15 @@ function showDashboard() {
   loginScreen.classList.add('hidden');
   dashboard.classList.remove('hidden');
   userDisplay.textContent = 'User: ' + userId;
-  // Start WebSocket connection after login
+  // Show master actions if master
+  if (userId === 'mastermaster1234') {
+    masterActions.style.display = 'flex';
+  } else {
+    masterActions.style.display = 'none';
+  }
+  // Start WebSocket
   initWebSocket();
   fetchData();
-  // Also start polling
   if (window.pollInterval) clearInterval(window.pollInterval);
   window.pollInterval = setInterval(fetchData, 3000);
 }
@@ -352,8 +337,6 @@ function initWebSocket() {
     const d = JSON.parse(e.data);
     if (d.type === 'bargain-alert' && d.userId === userId) {
       addLog('Bargain found for "' + d.term + '": ' + d.bargains.length + ' items', 'bargain');
-      // If we're not on bargains tab, update count?
-      // We'll just re-fetch data
       fetchData();
     } else if (d.type === 'update') {
       renderAll(d);
@@ -374,7 +357,6 @@ function renderAll(data) {
     const total = Object.values(data.bargains).reduce((s, a) => s + a.length, 0);
     document.getElementById('bargainCount').textContent = total;
   }
-  // Update term limit warning
   if (data.terms && data.terms.length >= 30) {
     termLimitWarning.style.display = 'block';
   } else {
@@ -412,9 +394,13 @@ function renderTerms(terms) {
     btn.addEventListener('click', async () => {
       const term = btn.dataset.term;
       if (!confirm('Remove "' + term + '"?')) return;
-      await authFetch(API_BASE + '/terms/' + encodeURIComponent(term), { method: 'DELETE' });
-      addLog('Removed term: "' + term + '"', 'warning');
-      fetchData();
+      const res = await authFetch(API_BASE + '/terms/' + encodeURIComponent(term), { method: 'DELETE' });
+      if (res.ok) {
+        addLog('Removed term: "' + term + '"', 'warning');
+        fetchData();
+      } else {
+        alert('Failed to remove term.');
+      }
     });
   });
   c.querySelectorAll('[data-action="avg"]').forEach(btn => {
@@ -426,7 +412,7 @@ function renderTerms(terms) {
         body: JSON.stringify({ term })
       });
       const data = await res.json();
-      if (data.success) {
+      if (res.ok) {
         addLog('Average calculation started for "' + term + '"', 'info');
         fetchData();
       } else {
@@ -443,7 +429,7 @@ function renderTerms(terms) {
         body: JSON.stringify({ term })
       });
       const data = await res.json();
-      if (data.success) {
+      if (res.ok) {
         addLog('Scanning started for "' + term + '"', 'success');
         fetchData();
       } else {
@@ -460,7 +446,7 @@ function renderTerms(terms) {
         body: JSON.stringify({ term })
       });
       const data = await res.json();
-      if (data.success) {
+      if (res.ok) {
         addLog('Scanning stopped for "' + term + '"', 'warning');
         fetchData();
       } else {
@@ -517,6 +503,14 @@ async function fetchData() {
   if (!userId) return;
   try {
     const res = await authFetch(API_BASE + '/status');
+    if (!res.ok) {
+      if (res.status === 401) {
+        // Unauthorized – logout
+        logout();
+        loginError.textContent = 'Session expired. Please login again.';
+      }
+      return;
+    }
     const data = await res.json();
     renderAll(data);
   } catch (e) { console.error(e); }
@@ -545,7 +539,51 @@ document.getElementById('addBtn').addEventListener('click', async () => {
     } else {
       alert(data.error || 'Failed to add term');
     }
-  } catch (err) { alert('Network error'); }
+  } catch (err) {
+    alert('Network error');
+  }
+});
+
+// ─── Master export/import ──────────────────────────────────────────
+exportBtn.addEventListener('click', async () => {
+  if (userId !== 'mastermaster1234') return;
+  const res = await authFetch(API_BASE + '/master/export');
+  const data = await res.json();
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'vinted_export_' + new Date().toISOString() + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  addLog('Export completed', 'success');
+});
+
+importBtn.addEventListener('click', () => {
+  importFile.click();
+});
+importFile.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  try {
+    const data = JSON.parse(text);
+    const res = await authFetch(API_BASE + '/master/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const result = await res.json();
+    if (res.ok) {
+      addLog('Import completed: ' + result.imported + ' users restored', 'success');
+      fetchData();
+    } else {
+      alert(result.error || 'Import failed');
+    }
+  } catch (err) {
+    alert('Invalid JSON file');
+  }
+  importFile.value = '';
 });
 
 // ─── Login button ──────────────────────────────────────────────────
@@ -583,14 +621,19 @@ app.post('/login', async (req, res) => {
   const { id } = req.body;
   if (!id) return res.status(400).json({ error: 'Missing ID' });
 
-  // Rate limit by IP
   const ip = req.ip || req.connection.remoteAddress;
   if (!checkRateLimit(ip)) {
     return res.status(429).json({ error: 'Too many failed attempts. Try again later.' });
   }
 
+  // Special case: master ID
+  if (id === MASTER_ID) {
+    sessions.set(id, { lastActive: Date.now(), membership: 'master' });
+    loginAttempts.delete(ip);
+    return res.json({ userId: id, membership: 'master' });
+  }
+
   try {
-    // Query Supabase keys table for this ID
     const { data, error } = await supabase
       .from('keys')
       .select('id, membership')
@@ -598,17 +641,12 @@ app.post('/login', async (req, res) => {
       .maybeSingle();
 
     if (error || !data) {
-      // Failed attempt
       loginAttempts.set(ip, { attempts: (loginAttempts.get(ip)?.attempts || 0) + 1, firstAttempt: Date.now() });
       return res.status(401).json({ error: 'Invalid ID' });
     }
 
-    // Success: create session
-    sessions.set(id, { lastActive: Date.now() });
-    // Reset rate limit for this IP
+    sessions.set(id, { lastActive: Date.now(), membership: data.membership || null });
     loginAttempts.delete(ip);
-
-    // Return userId and membership info
     res.json({ userId: id, membership: data.membership });
   } catch (err) {
     console.error('Login error:', err);
@@ -616,8 +654,17 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// ─── Middleware: authenticate all other API endpoints ──────────────
-app.use('/api', authenticate); // all /api/* routes require auth
+// ─── Middleware: authenticate all /api/* routes ────────────────────
+app.use('/api', (req, res, next) => {
+  const userId = req.headers['x-user-id'];
+  if (!userId || !sessions.has(userId)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  // Update session activity
+  sessions.set(userId, { ...sessions.get(userId), lastActive: Date.now() });
+  req.userId = userId;
+  next();
+});
 
 // ─── API endpoints ──────────────────────────────────────────────────
 
@@ -627,14 +674,11 @@ app.get('/api/status', (req, res) => {
   const userData = getUserData(userId);
   const termsWithStatus = userData.terms.map(t => ({
     ...t,
-    active: false, // will be set by job queue later
+    active: Array.from(globalActiveJobs.values()).some(j => j.userId === userId && j.term === t.term),
     listingCount: loadUserHistory(userId, t.term).length,
     bargainCount: (userData.bargains[t.term] || []).length,
     scanning: t.scanning || false
   }));
-  // Also get active jobs from global state (we'll need to filter by userId)
-  // We'll keep global activeJobs as before but with userId field.
-  // For now, we'll just return the terms.
   res.json({
     terms: termsWithStatus,
     clients: globalClients.size,
@@ -651,9 +695,10 @@ app.post('/api/terms', (req, res) => {
   if (!term) return res.status(400).json({ error: 'Missing term' });
   const userData = getUserData(userId);
   // Check membership
-  checkMembership(userId, res);
-  // Check term limit (30)
-  if (userData.terms.length >= 30) {
+  if (!checkMembership(userId)) {
+    return res.status(403).json({ error: 'No active membership. Please upgrade to add terms.' });
+  }
+  if (userData.terms.length >= MAX_TERMS) {
     return res.status(409).json({ error: 'Maximum 30 terms reached. Remove some to add more.' });
   }
   if (userData.terms.find(t => t.term === term)) {
@@ -662,7 +707,6 @@ app.post('/api/terms', (req, res) => {
   const obj = { term, averagePrice: null, thresholdPercent: parseInt(thresholdPercent), interval: parseInt(interval), scanning: false };
   userData.terms.push(obj);
   saveUserTerms(userId, userData.terms);
-  // Broadcast update to this user's frontend later
   broadcastUpdate(userId);
   res.json({ success: true, term: obj });
 });
@@ -676,7 +720,6 @@ app.delete('/api/terms/:term', (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   userData.terms.splice(idx, 1);
   saveUserTerms(userId, userData.terms);
-  // Remove from bargains
   delete userData.bargains[term];
   broadcastUpdate(userId);
   res.json({ success: true });
@@ -690,9 +733,10 @@ app.post('/api/calculate-average', (req, res) => {
   const userData = getUserData(userId);
   const termObj = userData.terms.find(t => t.term === term);
   if (!termObj) return res.status(404).json({ error: 'Term not found' });
-  // Check membership
-  checkMembership(userId, res);
-  // Queue scan_all job
+  if (!checkMembership(userId)) {
+    return res.status(403).json({ error: 'No active membership.' });
+  }
+  // Queue scan_all
   globalJobQueue.push({ userId, term, type: 'scan_all' });
   processQueue();
   broadcastUpdate(userId);
@@ -710,8 +754,9 @@ app.post('/api/start-scan', (req, res) => {
   if (!termObj.averagePrice) {
     return res.status(400).json({ error: 'Average price not set. Please calculate average first.' });
   }
-  // Check membership
-  checkMembership(userId, res);
+  if (!checkMembership(userId)) {
+    return res.status(403).json({ error: 'No active membership.' });
+  }
   if (termObj.scanning) {
     return res.status(409).json({ error: 'Scanning already active' });
   }
@@ -754,19 +799,13 @@ app.get('/api/searches', (req, res) => {
   res.json({ term, type: type || 'all', count: listings.length, listings: listings.slice(0, 100) });
 });
 
-// ─── Master export/import (only for master ID) ──────────────────────
-app.post('/master/export', authenticate, (req, res) => {
+// ─── Master export/import ──────────────────────────────────────────
+app.get('/api/master/export', (req, res) => {
   if (req.userId !== MASTER_ID) return res.status(403).json({ error: 'Forbidden' });
-  // Collect all user data
   const allData = {};
   const userDirs = fs.readdirSync(DATA_DIR).filter(f => fs.statSync(path.join(DATA_DIR, f)).isDirectory());
   for (const uid of userDirs) {
     const terms = loadUserTerms(uid);
-    const bargains = {};
-    // We need to load bargains per term from memory or from history? We'll just reconstruct from history maybe.
-    // For simplicity, we'll include terms and history.
-    // Actually we want full export including all listings.
-    // We'll iterate over terms and collect history.
     const history = {};
     for (const t of terms) {
       history[t.term] = loadUserHistory(uid, t.term);
@@ -776,11 +815,11 @@ app.post('/master/export', authenticate, (req, res) => {
   res.json(allData);
 });
 
-app.post('/master/import', authenticate, express.json({ limit: '50mb' }), (req, res) => {
+app.post('/api/master/import', express.json({ limit: '50mb' }), (req, res) => {
   if (req.userId !== MASTER_ID) return res.status(403).json({ error: 'Forbidden' });
   const data = req.body;
   if (!data || typeof data !== 'object') return res.status(400).json({ error: 'Invalid data' });
-  // Overwrite all user data
+  let imported = 0;
   for (const [uid, userData] of Object.entries(data)) {
     if (!userData.terms) continue;
     ensureUserDir(uid);
@@ -790,19 +829,17 @@ app.post('/master/import', authenticate, express.json({ limit: '50mb' }), (req, 
         saveUserHistory(uid, term, listings);
       }
     }
-  }
-  // Clear in-memory cache for affected users
-  for (const uid of Object.keys(data)) {
+    imported++;
     userCache.delete(uid);
   }
-  res.json({ success: true, imported: Object.keys(data).length });
+  res.json({ success: true, imported });
 });
 
 // ─── Global job queue and workers (shared) ──────────────────────────
 let globalJobQueue = [];
-let globalActiveJobs = new Map(); // jobId -> { userId, term, type, clientId, startTime }
-let globalClients = new Map(); // clientId -> { ws, busy, lastPing }
-let globalFrontendClients = new Set(); // WebSocket connections from browsers
+let globalActiveJobs = new Map();
+let globalClients = new Map();
+let globalFrontendClients = new Set();
 
 // ─── WebSocket server ──────────────────────────────────────────────────
 const server = http.createServer(app);
@@ -824,7 +861,6 @@ wss.on('connection', (ws, req) => {
             ws.userId = userId;
             globalFrontendClients.add(ws);
             console.log(`Frontend connected for user ${userId}`);
-            // Send initial update
             broadcastUpdate(userId);
           } else {
             ws.close();
@@ -844,7 +880,6 @@ wss.on('connection', (ws, req) => {
         case 'job-complete': {
           const { term, listings, jobId, jobType } = data;
           if (!term || !listings) break;
-          // Find job in activeJobs
           let job = null;
           let jobKey = null;
           for (const [key, j] of globalActiveJobs) {
@@ -860,17 +895,13 @@ wss.on('connection', (ws, req) => {
           }
           const uid = job.userId;
           console.log('Job complete for "' + term + '" (' + (jobType || 'scan_new') + ') from ' + clientId + ' for user ' + uid);
-          // Process scraped data for this user
           const result = processScrapedListings(uid, term, listings, jobType || 'scan_new');
-          // Mark client as not busy
           if (clientId && globalClients.has(clientId)) {
             globalClients.get(clientId).busy = false;
           }
-          // Remove from active jobs
           if (jobKey) {
             globalActiveJobs.delete(jobKey);
           }
-          // Send ack to worker
           ws.send(JSON.stringify({
             type: 'job-complete-ack',
             term,
@@ -878,15 +909,12 @@ wss.on('connection', (ws, req) => {
             newListings: result.newListings || []
           }));
           console.log('Job complete for "' + term + '" - added ' + (result.added || 0) + ' new');
-          // Broadcast update to this user's frontend
           broadcastUpdate(uid);
-          // Process next job
           processQueue();
           break;
         }
         case 'job-failed': {
           const { term, error, jobId, jobType } = data;
-          // Find job
           let job = null;
           let jobKey = null;
           for (const [key, j] of globalActiveJobs) {
@@ -905,7 +933,6 @@ wss.on('connection', (ws, req) => {
             if (jobKey) {
               globalActiveJobs.delete(jobKey);
             }
-            // Re-queue only if scan_new
             if ((jobType || 'scan_new') === 'scan_new') {
               globalJobQueue.push({ userId: uid, term, type: 'scan_new' });
             }
@@ -938,7 +965,6 @@ wss.on('connection', (ws, req) => {
       return;
     }
     if (clientId) {
-      // Find any active job for this client
       let lostJobKey = null;
       for (const [key, job] of globalActiveJobs) {
         if (job.clientId === clientId) {
@@ -951,7 +977,6 @@ wss.on('connection', (ws, req) => {
       if (lostJobKey) {
         const job = globalActiveJobs.get(lostJobKey);
         if (job) {
-          // Re-queue if scan_new
           if (job.type === 'scan_new') {
             globalJobQueue.push({ userId: job.userId, term: job.term, type: 'scan_new' });
           }
@@ -971,7 +996,6 @@ wss.on('connection', (ws, req) => {
 // ─── Job queue processor ──────────────────────────────────────────────
 function processQueue() {
   if (globalJobQueue.length === 0) return;
-  // Find available worker
   let availableClient = null;
   for (let [id, info] of globalClients) {
     if (!info.busy && info.ws.readyState === WebSocket.OPEN) {
@@ -980,11 +1004,9 @@ function processQueue() {
     }
   }
   if (!availableClient) return;
-  // Find first job whose term is not already active
   let jobIndex = -1;
   for (let i = 0; i < globalJobQueue.length; i++) {
     const job = globalJobQueue[i];
-    // Check if this term+user already has an active job
     let active = false;
     for (const [key, act] of globalActiveJobs) {
       if (act.userId === job.userId && act.term === job.term) {
@@ -1015,7 +1037,6 @@ function processQueue() {
 
 // ─── Broadcast update to a specific user's frontend ──────────────────
 function broadcastUpdate(userId) {
-  // Build status for this user
   const userData = getUserData(userId);
   const termsWithStatus = userData.terms.map(t => ({
     ...t,
@@ -1054,70 +1075,25 @@ function broadcastBargains(userId, term, bargainsList) {
   }
 }
 
-// ─── Membership check helper ─────────────────────────────────────────
-function checkMembership(userId, res) {
-  // We need to query Supabase to get membership field for this user
-  // But we can cache it in session? For simplicity, we'll check on each operation.
-  // However, we already have the membership from login stored in memory? 
-  // We'll store in a map: userMembership[userId] = membership string
-  // Fetch from DB if not cached.
-  // For this implementation, we'll do a quick async check, but since this is sync route, we'll use a sync approach:
-  // We'll have a global membership cache.
-  if (!globalMembershipCache) globalMembershipCache = {};
-  if (globalMembershipCache[userId] === undefined) {
-    // Fetch from Supabase
-    supabase
-      .from('keys')
-      .select('membership')
-      .eq('id', userId)
-      .single()
-      .then(({ data, error }) => {
-        if (error || !data) {
-          globalMembershipCache[userId] = null;
-        } else {
-          globalMembershipCache[userId] = data.membership;
-        }
-      });
-  }
-  // Since this is async, we'll just check cache and if not present, allow? Better to block until fetched.
-  // Simpler: we can check on login and store in session.
-  // We'll store membership in sessions map.
-  // Modify login to store membership.
-  // For now, we'll add a check in each endpoint that calls this function.
-  // We'll use a synchronous check: if membership is null/empty, return 403.
-  const membership = globalMembershipCache[userId];
-  if (!membership) {
-    res.status(403).json({ error: 'No active membership. Please upgrade to add or scan terms.' });
-    return false;
-  }
-  return true;
+// ─── Membership check helper (synchronous) ───────────────────────────
+function checkMembership(userId) {
+  const session = sessions.get(userId);
+  if (!session) return false;
+  // Master always allowed
+  if (userId === MASTER_ID) return true;
+  return !!session.membership; // null/empty means no membership
 }
-
-// ─── Global membership cache ──────────────────────────────────────────
-let globalMembershipCache = {};
-
-// ─── Update membership cache on login ────────────────────────────────
-// In login endpoint, after successful login, store membership in sessions and cache.
-// Modify login to store membership in a map.
-// We'll add a global map: userMembership[userId] = membership string.
-
-// Let's refactor: we'll use `sessions` map to store { lastActive, membership }.
-// Update login endpoint accordingly.
 
 // ─── Scheduler (runs every minute) ────────────────────────────────────
 setInterval(() => {
-  // For each user with active scanning terms, queue scan_new jobs
   for (const [userId, session] of sessions) {
+    if (!session.membership && userId !== MASTER_ID) continue; // skip non‑members
     const userData = getUserData(userId);
     if (!userData) continue;
-    // Check membership
-    const membership = session.membership;
-    if (!membership) continue; // skip if no membership
     for (const termObj of userData.terms) {
       if (!termObj.scanning) continue;
       const term = termObj.term;
       const interval = termObj.interval || 5;
-      // Check if already active or queued
       const active = Array.from(globalActiveJobs.values()).some(j => j.userId === userId && j.term === term && j.type === 'scan_new');
       const queued = globalJobQueue.some(j => j.userId === userId && j.term === term && j.type === 'scan_new');
       if (!active && !queued) {
@@ -1137,9 +1113,8 @@ setInterval(() => {
     }
   }
   processQueue();
-  // Broadcast updates to all users? We'll broadcast per user when changes occur.
-  // For simplicity, we can broadcast to each user periodically.
-  for (const [userId, session] of sessions) {
+  // Broadcast updates to all active users
+  for (const [userId] of sessions) {
     broadcastUpdate(userId);
   }
 }, 60000);
@@ -1155,6 +1130,4 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('Persistent storage: ' + (process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'));
   console.log('Master ID: ' + MASTER_ID);
   console.log('='.repeat(60) + '\n');
-
-  // Initialize membership cache for all users? We'll lazy load.
 });
