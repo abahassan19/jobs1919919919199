@@ -434,7 +434,6 @@ app.use(cors());
 app.use(express.json());
 
 // ─── Serve Service Worker ──────────────────────────────────────────────
-// The service worker must be served from the root scope.
 const SW_SCRIPT = `
 // Service Worker for Vinted Price Monitor
 self.addEventListener('push', function(event) {
@@ -470,29 +469,152 @@ app.get('/sw.js', (req, res) => {
   res.send(SW_SCRIPT);
 });
 
-// ─── Frontend HTML ──────────────────────────────────────────────────────
+// ─── Responsive Frontend HTML ──────────────────────────────────────────
 const HTML = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
 <title>Vinted Price Monitor</title>
 <style>
-*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f5f6fa}.container{max-width:1400px;margin:0 auto;padding:20px}.login-container{max-width:400px;margin:100px auto;background:#fff;border-radius:8px;padding:30px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.login-container h2{margin-top:0}.login-container input{width:100%;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px}.login-container button{width:100%;padding:12px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer}.login-container .error{color:#e74c3c;font-size:14px;margin-top:5px}.hidden{display:none}h1{font-weight:400;color:#2c3e50}.card{background:#fff;border-radius:8px;padding:20px;margin-bottom:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.flex{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.flex label{font-weight:500;min-width:80px}input,select{padding:8px 12px;border:1px solid #ddd;border-radius:4px;font-size:14px;background:#fff}input{flex:1;min-width:160px}button{padding:8px 16px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500}button:hover{background:#2980b9}button.secondary{background:#95a5a6}button.secondary:hover{background:#7f8c8d}button.danger{background:#e74c3c}button.danger:hover{background:#c0392b}button.success{background:#2ecc71}button.success:hover{background:#27ae60}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #ecf0f1}th{background:#f8f9fa;font-weight:600;color:#2c3e50}.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}.badge-active{background:#2ecc71;color:#fff}.badge-idle{background:#bdc3c7;color:#2c3e50}.badge-bargain{background:#e74c3c;color:#fff}.badge-push-on{background:#3498db;color:#fff}.badge-push-off{background:#95a5a6;color:#fff}.tabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid #ddd}.tab{padding:10px 16px;cursor:pointer;border:none;background:none;font-weight:500;color:#7f8c8d}.tab.active{color:#3498db;border-bottom:2px solid #3498db}.tab-content{display:none}.tab-content.active{display:block}.log{background:#2c3e50;color:#ecf0f1;padding:10px;border-radius:4px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:12px}.log .timestamp{color:#7f8c8d}.log .info{color:#3498db}.log .success{color:#2ecc71}.log .warning{color:#f1c40f}.log .bargain{color:#e74c3c;font-weight:700}.bargain-item{background:#fef9e7;border-left:4px solid #e74c3c;padding:10px;margin:5px 0;border-radius:4px}.bargain-item strong{display:block;margin-bottom:4px}.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0}.stat-box{background:#f8f9fa;padding:10px;border-radius:4px;text-align:center}.stat-box .value{font-size:20px;font-weight:600;color:#2c3e50}.stat-box .label{font-size:12px;color:#7f8c8d}.empty{color:#95a5a6;text-align:center;padding:20px}.help-text{font-size:12px;color:#95a5a6;margin-top:4px}.inline-actions{display:flex;gap:6px;flex-wrap:wrap}.header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}.logout-btn{background:#e74c3c;color:#fff;padding:6px 12px;border:none;border-radius:4px;cursor:pointer}
-.push-card{background:#e8f4fd;border:1px solid #b8d4e8;border-radius:8px;padding:15px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:15px;margin-bottom:20px}
-.push-card .status{display:flex;align-items:center;gap:10px}
-.push-card .instructions{font-size:14px;color:#2c3e50;background:#fff;padding:10px 15px;border-radius:6px;border-left:4px solid #3498db;width:100%;margin-top:8px;display:none}
+/* ── Reset & base ───────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f5f6fa;color:#2c3e50;padding:12px;min-height:100vh}
+
+/* ── Container ──────────────────────────────────────────────── */
+.container{max-width:1200px;margin:0 auto}
+.hidden{display:none !important}
+
+/* ── Login ──────────────────────────────────────────────────── */
+.login-container{max-width:400px;margin:60px auto;background:#fff;border-radius:12px;padding:24px;box-shadow:0 4px 20px rgba(0,0,0,0.08)}
+.login-container h2{margin-top:0;font-weight:500;font-size:24px}
+.login-container input{width:100%;padding:14px;margin:10px 0;border:1px solid #ddd;border-radius:8px;font-size:16px}
+.login-container button{width:100%;padding:14px;background:#3498db;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer}
+.login-container .error{color:#e74c3c;font-size:14px;margin-top:5px}
+
+/* ── Header ────────────────────────────────────────────────── */
+.header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.header h1{font-size:22px;font-weight:600;letter-spacing:-0.3px}
+.header .user{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.header .user span{font-size:14px;background:#ecf0f1;padding:4px 12px;border-radius:20px}
+.logout-btn{background:#e74c3c;color:#fff;padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-weight:500;font-size:14px}
+
+/* ── Cards ──────────────────────────────────────────────────── */
+.card{background:#fff;border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06)}
+.card h3{font-size:17px;font-weight:600;margin-bottom:12px;color:#34495e}
+
+/* ── Push card ─────────────────────────────────────────────── */
+.push-card{background:#e8f4fd;border:1px solid #b8d4e8;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px;margin-bottom:16px}
+.push-card .row{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.push-card .status{display:flex;align-items:center;gap:8px;font-size:14px}
+.push-card .status .badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600}
+.badge-push-on{background:#2ecc71;color:#fff}
+.badge-push-off{background:#95a5a6;color:#fff}
+.push-card .instructions{font-size:14px;background:#fff;padding:12px 14px;border-radius:8px;border-left:4px solid #3498db;display:none}
 .push-card .instructions.show{display:block}
 .push-card .instructions strong{color:#e67e22}
-.password-popup-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;backdrop-filter:blur(4px)}
-.password-popup{background:#fff;border-radius:16px;padding:40px;max-width:500px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.5);animation:popIn 0.3s ease-out}
-.password-popup h2{color:#e74c3c;margin-top:0;font-size:28px}
-.password-popup .password{background:#f8f9fa;padding:15px;border-radius:8px;font-size:32px;font-weight:700;font-family:monospace;letter-spacing:2px;color:#2c3e50;margin:20px 0;border:2px dashed #3498db}
-.password-popup p{color:#666;line-height:1.6;margin-bottom:20px}
+button{background:#3498db;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:500;cursor:pointer;touch-action:manipulation}
+button:hover{background:#2980b9}
+button.secondary{background:#95a5a6}
+button.secondary:hover{background:#7f8c8d}
+button.danger{background:#e74c3c}
+button.danger:hover{background:#c0392b}
+button.success{background:#2ecc71}
+button.success:hover{background:#27ae60}
+button:disabled{opacity:0.6;cursor:not-allowed}
+
+/* ── Add term form ──────────────────────────────────────────── */
+.add-form{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.add-form .field{flex:1 1 160px;min-width:130px}
+.add-form .field label{display:block;font-size:13px;font-weight:500;margin-bottom:3px;color:#7f8c8d}
+.add-form .field input,.add-form .field select{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;background:#fff}
+.add-form .field input{flex:1}
+.add-form .field .help{font-size:11px;color:#95a5a6;margin-top:2px}
+.add-form button{align-self:center;padding:10px 20px}
+.term-limit-warning{color:#e67e22;font-size:14px;margin-top:6px;display:none}
+
+/* ── Tabs ──────────────────────────────────────────────────── */
+.tabs{display:flex;gap:6px;border-bottom:2px solid #ddd;margin-bottom:16px;flex-wrap:wrap}
+.tab{padding:10px 14px;cursor:pointer;border:none;background:none;font-weight:500;color:#7f8c8d;font-size:15px;border-bottom:2px solid transparent;margin-bottom:-2px}
+.tab.active{color:#3498db;border-bottom-color:#3498db}
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* ── Terms – Desktop table ─────────────────────────────────── */
+.table-wrap{overflow-x:auto;margin-top:4px}
+.terms-table{width:100%;border-collapse:collapse;font-size:14px}
+.terms-table th{text-align:left;padding:10px 8px;background:#f8f9fa;font-weight:600;color:#2c3e50;border-bottom:2px solid #ecf0f1}
+.terms-table td{padding:10px 8px;border-bottom:1px solid #ecf0f1;vertical-align:middle}
+.terms-table .actions{display:flex;flex-wrap:wrap;gap:6px}
+.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600}
+.badge-active{background:#2ecc71;color:#fff}
+.badge-idle{background:#bdc3c7;color:#2c3e50}
+.badge-bargain{background:#e74c3c;color:#fff}
+
+/* ── Terms – Mobile card layout ────────────────────────────── */
+.term-card{background:#f8f9fa;border-radius:8px;padding:12px;margin-bottom:10px;border-left:4px solid #3498db;display:none}
+.term-card .row{display:flex;justify-content:space-between;flex-wrap:wrap;margin:2px 0;font-size:14px}
+.term-card .label{color:#7f8c8d;font-weight:500;min-width:80px}
+.term-card .value{font-weight:500}
+.term-card .actions{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
+
+/* ── Bargains ───────────────────────────────────────────────── */
+.bargain-item{background:#fef9e7;border-left:4px solid #e74c3c;padding:12px;margin-bottom:8px;border-radius:6px;font-size:14px}
+.bargain-item strong{display:block;margin-bottom:4px}
+.bargain-item .meta{display:flex;flex-wrap:wrap;gap:12px;font-size:13px}
+.bargain-item .meta a{color:#3498db;text-decoration:none;font-weight:500}
+
+/* ── Workers ────────────────────────────────────────────────── */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin:8px 0}
+.stat-box{background:#f8f9fa;padding:12px;border-radius:8px;text-align:center}
+.stat-box .value{font-size:20px;font-weight:600;color:#2c3e50}
+.stat-box .label{font-size:12px;color:#7f8c8d}
+.workers-table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+.workers-table th{text-align:left;padding:8px;background:#f8f9fa;border-bottom:2px solid #ecf0f1}
+.workers-table td{padding:8px;border-bottom:1px solid #ecf0f1}
+
+/* ── Log ────────────────────────────────────────────────────── */
+.log{background:#2c3e50;color:#ecf0f1;padding:12px;border-radius:8px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:13px;line-height:1.5}
+.log .timestamp{color:#7f8c8d}
+.log .info{color:#3498db}
+.log .success{color:#2ecc71}
+.log .warning{color:#f1c40f}
+.log .bargain{color:#e74c3c;font-weight:700}
+
+.empty{color:#95a5a6;text-align:center;padding:20px;font-size:15px}
+
+/* ── Password popup ─────────────────────────────────────────── */
+.password-popup-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999;backdrop-filter:blur(4px)}
+.password-popup{background:#fff;border-radius:16px;padding:30px 24px;max-width:420px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.4);animation:popIn 0.25s ease-out}
+.password-popup h2{color:#e74c3c;margin-top:0;font-size:26px}
+.password-popup .password{background:#f8f9fa;padding:14px;border-radius:8px;font-size:28px;font-weight:700;font-family:monospace;letter-spacing:2px;color:#2c3e50;margin:16px 0;border:2px dashed #3498db}
+.password-popup p{color:#555;line-height:1.5;margin-bottom:12px}
 .password-popup .warning{color:#e74c3c;font-weight:600;font-size:14px}
-.password-popup button{padding:12px 40px;background:#3498db;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer}
-.password-popup button:hover{background:#2980b9}
-@keyframes popIn{0%{transform:scale(0.8);opacity:0}100%{transform:scale(1);opacity:1}}
+.password-popup button{padding:12px 32px;background:#3498db;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer}
+@keyframes popIn{0%{transform:scale(0.9);opacity:0}100%{transform:scale(1);opacity:1}}
+
+/* ─── Responsive breakpoints ────────────────────────────────── */
+@media (max-width: 767px) {
+  .header h1{font-size:20px}
+  .push-card .row{flex-direction:column;align-items:stretch}
+  .push-card .status{justify-content:center}
+  .push-card button{width:100%}
+  .add-form .field{flex:1 1 100%}
+  .add-form button{width:100%}
+  .tab{padding:8px 12px;font-size:14px}
+  .terms-table{display:none}
+  .term-card{display:block}
+  .stats-grid{grid-template-columns:1fr 1fr}
+}
+@media (min-width: 768px) {
+  .term-card{display:none}
+  .terms-table{display:table}
+}
+@media (max-width: 480px) {
+  body{padding:8px}
+  .card{padding:12px}
+  .bargain-item .meta{flex-direction:column;gap:4px}
+}
 </style>
 </head>
 <body>
@@ -500,7 +622,7 @@ const HTML = `<!DOCTYPE html>
 <div id="passwordPopup" class="password-popup-overlay" style="display:none;">
 <div class="password-popup">
 <h2>🔑 Your Access Code</h2>
-<p>Hey! Your password is:</p>
+<p>Your password is:</p>
 <div class="password" id="displayPassword"></div>
 <p><strong>Write this down so it won't get lost!</strong></p>
 <p class="warning">⚠️ You will need this code to log in.</p>
@@ -519,50 +641,96 @@ const HTML = `<!DOCTYPE html>
 
 <div id="dashboard" class="container hidden">
 <div class="header">
-<h1>Vinted Price Monitor</h1>
-<div><span id="userDisplay"></span> <button class="logout-btn" id="logoutBtn">Logout</button></div>
+<h1>🛍️ Vinted Monitor</h1>
+<div class="user">
+<span id="userDisplay"></span>
+<button class="logout-btn" id="logoutBtn">Logout</button>
+</div>
 </div>
 
-<!-- PUSH NOTIFICATION CARD -->
+<!-- Push Card -->
 <div class="push-card" id="pushCard">
-  <div class="status">
-    <span id="pushStatusIcon">🔔</span>
-    <span id="pushStatusText">Notifications: Checking...</span>
-    <span id="pushStatusBadge" class="badge badge-push-off">Off</span>
-  </div>
-  <div>
-    <button id="enablePushBtn" class="success">🔔 Enable Notifications</button>
-    <button id="refreshPushBtn" class="secondary" style="display:none;">🔄 Refresh</button>
+  <div class="row">
+    <div class="status">
+      <span id="pushStatusIcon">🔔</span>
+      <span id="pushStatusText">Notifications: Checking...</span>
+      <span id="pushStatusBadge" class="badge badge-push-off">Off</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;">
+      <button id="enablePushBtn" class="success">🔔 Enable Notifications</button>
+      <button id="refreshPushBtn" class="secondary" style="display:none;">🔄 Refresh</button>
+    </div>
   </div>
   <div id="pushInstructions" class="instructions">
     <strong>📱 Device instructions:</strong> <span id="deviceInstructions">Loading...</span>
   </div>
 </div>
 
+<!-- Add Term -->
 <div class="card">
 <h3>Add Search Term</h3>
-<div class="flex">
-<div style="flex:1;min-width:200px"><label>Term</label><input type="text" id="newTerm" placeholder="e.g., cortiez hoodie" /></div>
-<div style="width:120px"><label>Deal %</label><input type="number" id="threshold" value="20" step="1" min="0" /><div class="help-text">% below average to trigger bargain</div></div>
-<div style="width:120px"><label>Interval</label><select id="interval"><option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option><option value="20">20 min</option><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option></select><div class="help-text">How often to scan for new items</div></div>
-<button id="addBtn">Add Term</button>
+<div class="add-form">
+  <div class="field">
+    <label>Term</label>
+    <input type="text" id="newTerm" placeholder="e.g., cortiez hoodie" />
+  </div>
+  <div class="field">
+    <label>Deal %</label>
+    <input type="number" id="threshold" value="20" step="1" min="0" />
+    <div class="help">% below average</div>
+  </div>
+  <div class="field">
+    <label>Interval</label>
+    <select id="interval">
+      <option value="5">5 min</option><option value="10">10 min</option>
+      <option value="15">15 min</option><option value="20">20 min</option>
+      <option value="30">30 min</option><option value="45">45 min</option>
+      <option value="60">60 min</option>
+    </select>
+    <div class="help">scan frequency</div>
+  </div>
+  <button id="addBtn">Add Term</button>
 </div>
-<div id="termLimitWarning" style="color:#e67e22;margin-top:5px;display:none;">You have reached the maximum of 30 terms. Remove some to add more.</div>
+<div id="termLimitWarning" class="term-limit-warning">⚠️ You have reached the maximum of 30 terms. Remove some to add more.</div>
 </div>
+
+<!-- Tabs -->
 <div class="tabs">
-<button class="tab active" data-tab="terms">Terms</button>
-<button class="tab" data-tab="bargains">Bargains <span id="bargainCount" class="badge" style="background:#e74c3c;color:#fff;padding:0 8px;">0</span></button>
-<button class="tab" data-tab="workers">Workers</button>
-<button class="tab" data-tab="log">Log</button>
+  <button class="tab active" data-tab="terms">Terms</button>
+  <button class="tab" data-tab="bargains">Bargains <span id="bargainCount" class="badge" style="background:#e74c3c;color:#fff;padding:0 8px;margin-left:4px;">0</span></button>
+  <button class="tab" data-tab="workers">Workers</button>
+  <button class="tab" data-tab="log">Log</button>
 </div>
-<div id="tab-terms" class="tab-content active"><div class="card"><h3>Search Terms</h3><div id="termContainer"></div></div></div>
-<div id="tab-bargains" class="tab-content"><div class="card"><h3>Bargain Alerts</h3><div id="bargainContainer"><div class="empty">No bargains yet.</div></div></div></div>
-<div id="tab-workers" class="tab-content"><div class="card"><h3>Connected Workers</h3><div id="workersContainer"><div class="empty">No workers connected.</div></div></div></div>
-<div id="tab-log" class="tab-content"><div class="card"><h3>Activity Log</h3><div class="log" id="logContainer"><div class="info">System ready.</div></div></div></div>
+
+<!-- Tab contents -->
+<div id="tab-terms" class="tab-content active">
+  <div class="card">
+    <h3>Your Search Terms</h3>
+    <div id="termContainer"></div>
+  </div>
+</div>
+<div id="tab-bargains" class="tab-content">
+  <div class="card">
+    <h3>Bargain Alerts</h3>
+    <div id="bargainContainer"><div class="empty">No bargains yet.</div></div>
+  </div>
+</div>
+<div id="tab-workers" class="tab-content">
+  <div class="card">
+    <h3>Connected Workers</h3>
+    <div id="workersContainer"><div class="empty">No workers connected.</div></div>
+  </div>
+</div>
+<div id="tab-log" class="tab-content">
+  <div class="card">
+    <h3>Activity Log</h3>
+    <div class="log" id="logContainer"><div class="info">System ready.</div></div>
+  </div>
+</div>
 </div>
 
 <script>
-// ─── VAPID public key (injected from server) ──────────────────────
+// ─── VAPID public key ────────────────────────────────────────────────
 const VAPID_PUBLIC_KEY = '${VAPID_PUBLIC_KEY}';
 
 let userId = null;
@@ -589,13 +757,12 @@ const pushStatusIcon = document.getElementById('pushStatusIcon');
 const pushInstructions = document.getElementById('pushInstructions');
 const deviceInstructions = document.getElementById('deviceInstructions');
 
+// ─── Referral popup ────────────────────────────────────────────────────
 const urlParams = new URLSearchParams(window.location.search);
 const referral = urlParams.get('referral');
 if (referral) {
   document.getElementById('displayPassword').textContent = referral;
   passwordPopup.style.display = 'flex';
-} else {
-  passwordPopup.style.display = 'none';
 }
 dismissPopup.addEventListener('click', () => {
   passwordPopup.style.display = 'none';
@@ -654,7 +821,6 @@ function showDashboard() {
   fetchData();
   if (window.pollInterval) clearInterval(window.pollInterval);
   window.pollInterval = setInterval(fetchData, 3000);
-  // Initialize push after login
   initPushNotifications();
 }
 
@@ -689,17 +855,14 @@ async function initPushNotifications() {
     swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
     console.log('Service Worker registered');
 
-    // Check permission
     const perm = Notification.permission;
     if (perm === 'granted') {
-      // Check if already subscribed
       const sub = await swRegistration.pushManager.getSubscription();
       if (sub) {
         pushSubscription = sub;
         setPushStatus('✅', 'Notifications enabled', 'badge-push-on');
         enablePushBtn.textContent = '✅ Enabled';
         enablePushBtn.disabled = true;
-        // Send subscription to server
         await sendSubscriptionToServer(sub);
         return;
       } else {
@@ -709,7 +872,7 @@ async function initPushNotifications() {
     } else if (perm === 'denied') {
       setPushStatus('🚫', 'Notifications blocked by browser', 'badge-push-off');
       enablePushBtn.style.display = 'none';
-      showDeviceInstructions(true); // show manual fix
+      showDeviceInstructions(true);
       return;
     } else {
       setPushStatus('🔔', 'Click enable to get alerts', 'badge-push-off');
@@ -731,7 +894,6 @@ function setPushStatus(icon, text, badgeClass) {
 function showDeviceInstructions(force = false) {
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const isAndroid = /Android/.test(navigator.userAgent);
-  
   let msg = '';
   if (isIOS) {
     msg = '📱 <strong>iPhone / iPad:</strong> Tap the Share button (square with arrow), then select <strong>"Add to Home Screen"</strong>. Open the app from your home screen, then tap "Enable Notifications".';
@@ -759,7 +921,6 @@ enablePushBtn.addEventListener('click', async () => {
     }
   }
 
-  // Request permission
   let perm = Notification.permission;
   if (perm === 'default') {
     perm = await Notification.requestPermission();
@@ -770,7 +931,6 @@ enablePushBtn.addEventListener('click', async () => {
     return;
   }
 
-  // Subscribe
   try {
     const sub = await swRegistration.pushManager.subscribe({
       userVisibleOnly: true,
@@ -795,12 +955,10 @@ async function sendSubscriptionToServer(sub) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(sub)
   });
-  if (!res.ok) {
-    console.error('Failed to send subscription to server');
-  }
+  if (!res.ok) console.error('Failed to send subscription to server');
 }
 
-// ─── Render functions ──────────────────────────────────────────────────
+// ─── Rendering functions ───────────────────────────────────────────────
 function renderAll(data) {
   renderTerms(data.terms);
   renderWorkers(data.clients, data.active);
@@ -815,7 +973,6 @@ function renderAll(data) {
   } else {
     termLimitWarning.style.display = 'none';
   }
-  // Update push status from server (if user has subscription)
   if (data.pushEnabled) {
     setPushStatus('✅', 'Notifications enabled', 'badge-push-on');
     enablePushBtn.textContent = '✅ Enabled';
@@ -824,31 +981,62 @@ function renderAll(data) {
 }
 
 function renderTerms(terms) {
-  const c = document.getElementById('termContainer');
+  const container = document.getElementById('termContainer');
   if (!terms || terms.length === 0) {
-    c.innerHTML = '<div class="empty">No search terms. Add one above.</div>';
+    container.innerHTML = '<div class="empty">No search terms. Add one above.</div>';
     return;
   }
-  let html = '<table><thead><tr><th>Term</th><th>Avg Price</th><th>Deal %</th><th>Interval</th><th>Status</th><th>Listings</th><th>Bargains</th><th>Actions</th></tr></thead><tbody>';
+
+  // ── Desktop table ──
+  let tableHtml = '<div class="table-wrap"><table class="terms-table"><thead><tr><th>Term</th><th>Avg Price</th><th>Deal %</th><th>Interval</th><th>Status</th><th>Listings</th><th>Bargains</th><th>Actions</th></tr></thead><tbody>';
   terms.forEach(t => {
     const status = t.active ? '<span class="badge badge-active">Scanning</span>' : '<span class="badge badge-idle">Idle</span>';
     const avgDisplay = t.averagePrice ? '£' + t.averagePrice : 'Not set';
     let scanBtn = '';
     if (t.averagePrice) {
       if (t.scanning) {
-        scanBtn = '<button class="danger" data-action="stop" data-term="' + t.term + '">Stop Scanning</button>';
+        scanBtn = '<button class="danger" data-action="stop" data-term="' + t.term + '">Stop</button>';
       } else {
-        scanBtn = '<button class="success" data-action="scan" data-term="' + t.term + '">Start Scanning</button>';
+        scanBtn = '<button class="success" data-action="scan" data-term="' + t.term + '">Scan</button>';
       }
     } else {
-      scanBtn = '<button class="secondary" data-action="avg" data-term="' + t.term + '">Calc Average</button>';
+      scanBtn = '<button class="secondary" data-action="avg" data-term="' + t.term + '">Calc Avg</button>';
     }
-    html += '<tr><td><strong>' + t.term + '</strong></td><td>' + avgDisplay + '</td><td>' + t.thresholdPercent + '%</td><td>' + t.interval + ' min</td><td>' + status + '</td><td>' + (t.listingCount || 0) + '</td><td>' + (t.bargainCount || 0) + '</td><td class="inline-actions">' + scanBtn + '<button class="danger" data-action="remove" data-term="' + t.term + '">Remove</button></td></tr>';
+    tableHtml += '<tr><td><strong>' + t.term + '</strong></td><td>' + avgDisplay + '</td><td>' + t.thresholdPercent + '%</td><td>' + t.interval + ' min</td><td>' + status + '</td><td>' + (t.listingCount || 0) + '</td><td>' + (t.bargainCount || 0) + '</td><td class="actions">' + scanBtn + '<button class="danger" data-action="remove" data-term="' + t.term + '">✕</button></td></tr>';
   });
-  html += '</tbody></table>';
-  c.innerHTML = html;
+  tableHtml += '</tbody></table></div>';
 
-  c.querySelectorAll('[data-action="remove"]').forEach(btn => {
+  // ── Mobile cards ──
+  let cardHtml = '';
+  terms.forEach(t => {
+    const status = t.active ? '<span class="badge badge-active">Scanning</span>' : '<span class="badge badge-idle">Idle</span>';
+    const avgDisplay = t.averagePrice ? '£' + t.averagePrice : 'Not set';
+    let scanBtn = '';
+    if (t.averagePrice) {
+      if (t.scanning) {
+        scanBtn = '<button class="danger" data-action="stop" data-term="' + t.term + '">Stop</button>';
+      } else {
+        scanBtn = '<button class="success" data-action="scan" data-term="' + t.term + '">Scan</button>';
+      }
+    } else {
+      scanBtn = '<button class="secondary" data-action="avg" data-term="' + t.term + '">Calc Avg</button>';
+    }
+    cardHtml += '<div class="term-card" data-term="' + t.term + '">';
+    cardHtml += '<div class="row"><span class="label">Term</span><span class="value"><strong>' + t.term + '</strong></span></div>';
+    cardHtml += '<div class="row"><span class="label">Avg Price</span><span class="value">' + avgDisplay + '</span></div>';
+    cardHtml += '<div class="row"><span class="label">Deal %</span><span class="value">' + t.thresholdPercent + '%</span></div>';
+    cardHtml += '<div class="row"><span class="label">Interval</span><span class="value">' + t.interval + ' min</span></div>';
+    cardHtml += '<div class="row"><span class="label">Status</span><span class="value">' + status + '</span></div>';
+    cardHtml += '<div class="row"><span class="label">Listings</span><span class="value">' + (t.listingCount || 0) + '</span></div>';
+    cardHtml += '<div class="row"><span class="label">Bargains</span><span class="value">' + (t.bargainCount || 0) + '</span></div>';
+    cardHtml += '<div class="actions">' + scanBtn + '<button class="danger" data-action="remove" data-term="' + t.term + '">Remove</button></div>';
+    cardHtml += '</div>';
+  });
+
+  container.innerHTML = tableHtml + cardHtml;
+
+  // ── Attach event listeners ──
+  container.querySelectorAll('[data-action="remove"]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const term = btn.dataset.term;
       if (!confirm('Remove "' + term + '"?')) return;
@@ -861,7 +1049,7 @@ function renderTerms(terms) {
       }
     });
   });
-  c.querySelectorAll('[data-action="avg"]').forEach(btn => {
+  container.querySelectorAll('[data-action="avg"]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const term = btn.dataset.term;
       const res = await authFetch(API_BASE + '/calculate-average', {
@@ -878,7 +1066,7 @@ function renderTerms(terms) {
       }
     });
   });
-  c.querySelectorAll('[data-action="scan"]').forEach(btn => {
+  container.querySelectorAll('[data-action="scan"]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const term = btn.dataset.term;
       const res = await authFetch(API_BASE + '/start-scan', {
@@ -895,7 +1083,7 @@ function renderTerms(terms) {
       }
     });
   });
-  c.querySelectorAll('[data-action="stop"]').forEach(btn => {
+  container.querySelectorAll('[data-action="stop"]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const term = btn.dataset.term;
       const res = await authFetch(API_BASE + '/stop-scan', {
@@ -922,7 +1110,7 @@ function renderWorkers(clientCount, activeJobs) {
   }
   let html = '<div class="stats-grid"><div class="stat-box"><div class="value">' + clientCount + '</div><div class="label">Connected Workers</div></div><div class="stat-box"><div class="value">' + (activeJobs ? activeJobs.length : 0) + '</div><div class="label">Active Jobs</div></div></div>';
   if (activeJobs && activeJobs.length > 0) {
-    html += '<table><thead><tr><th>Term</th><th>Type</th></tr></thead><tbody>';
+    html += '<table class="workers-table"><thead><tr><th>Term</th><th>Type</th></tr></thead><tbody>';
     activeJobs.forEach(job => {
       html += '<tr><td>' + job.term + '</td><td>' + job.type + '</td></tr>';
     });
@@ -940,7 +1128,7 @@ function renderBargains(b) {
       has = true;
       html += '<h4>' + term + ' <span class="badge badge-bargain">' + items.length + ' bargains</span></h4>';
       items.slice(0, 20).forEach(item => {
-        html += '<div class="bargain-item"><strong>' + item.name + '</strong><div style="display:flex;gap:15px;flex-wrap:wrap;font-size:14px;"><span>Price: ' + item.price + '</span><span>Discount: ' + item.discount + '%</span><span>Size: ' + (item.size || 'N/A') + '</span><span>Condition: ' + (item.condition || 'N/A') + '</span><a href="' + item.link + '" target="_blank">View</a></div></div>';
+        html += '<div class="bargain-item"><strong>' + item.name + '</strong><div class="meta"><span>Price: ' + item.price + '</span><span>Discount: ' + item.discount + '%</span><span>Size: ' + (item.size || 'N/A') + '</span><span>Condition: ' + (item.condition || 'N/A') + '</span><a href="' + item.link + '" target="_blank">View</a></div></div>';
       });
       if (items.length > 20) html += '<p>... and ' + (items.length - 20) + ' more</p>';
     }
@@ -1019,7 +1207,6 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 addLog('Dashboard ready. Please log in.', 'info');
 
-// Show device instructions on load if not enabled
 setTimeout(() => {
   showDeviceInstructions(false);
 }, 1000);
@@ -1101,7 +1288,6 @@ app.post('/subscribe', (req, res) => {
     return res.status(400).json({ error: 'Invalid subscription' });
   }
   let subs = loadPushSubscriptions(userId);
-  // Avoid duplicates
   subs = subs.filter(s => s.endpoint !== subscription.endpoint);
   subs.push(subscription);
   savePushSubscriptions(userId, subs);
@@ -1421,7 +1607,7 @@ setInterval(() => {
 // ─── Start server ──────────────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\n' + '='.repeat(60));
-  console.log('Vinted Price Monitor Server (with Push Notifications)');
+  console.log('Vinted Price Monitor Server (with Push & Responsive UI)');
   console.log('='.repeat(60));
   console.log('HTTP: http://localhost:' + PORT);
   console.log('WebSocket: ws://localhost:' + PORT);
