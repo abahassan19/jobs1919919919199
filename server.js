@@ -24,6 +24,7 @@ console.log(`Persistent storage: ${process.env.RENDER_PERSISTENT_DISK ? 'enabled
 const MAX_TERMS = 30;
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
+const MEMBERSHIP_SYNC_INTERVAL = 60000; // 1 minute
 
 // ─── In‑memory state ──────────────────────────────────────────────────
 const sessions = new Map();           // userId -> { lastActive, membership }
@@ -275,10 +276,68 @@ function checkRateLimit(ip) {
   return true;
 }
 
-// ─── Membership check ──────────────────────────────────────────────────
+// ─── Membership management ──────────────────────────────────────────
 function hasMembership(userId) {
   const session = sessions.get(userId);
   return session && !!session.membership;
+}
+
+// Cancel all jobs for a user (queued and active) and set scanning flags to false
+function cancelUserJobs(userId) {
+  // Remove queued jobs
+  jobQueue = jobQueue.filter(j => j.userId !== userId);
+  // Remove active jobs and notify workers? We'll just remove from activeJobs;
+  // the worker will eventually send job-complete, but we ignore it because it's not in activeJobs.
+  // To be safe, we can also send a cancel message to the worker if we track which worker is doing it.
+  // For simplicity, we'll just remove from activeJobs.
+  for (const [key, job] of activeJobs) {
+    if (job.userId === userId) {
+      activeJobs.delete(key);
+    }
+  }
+  // Update user's terms scanning flag to false
+  const userData = getUserData(userId);
+  userData.terms.forEach(t => { t.scanning = false; });
+  saveUserTerms(userId, userData.terms);
+  // Broadcast update to frontend
+  broadcastUpdate(userId);
+  console.log(`Cancelled all jobs for user ${userId} (membership revoked)`);
+}
+
+// Refresh membership for a single user
+async function refreshMembership(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('keys')
+      .select('membership')
+      .eq('id', userId)
+      .maybeSingle();
+    if (error) {
+      console.error(`Error refreshing membership for ${userId}:`, error);
+      return;
+    }
+    const newMembership = data ? data.membership : null;
+    const session = sessions.get(userId);
+    if (session) {
+      const oldMembership = session.membership;
+      session.membership = newMembership;
+      sessions.set(userId, session);
+      // If membership changed from non-null to null, cancel jobs
+      if (oldMembership && !newMembership) {
+        cancelUserJobs(userId);
+      }
+    }
+  } catch (err) {
+    console.error(`Error refreshing membership for ${userId}:`, err);
+  }
+}
+
+// Periodic membership sync for all active sessions
+async function syncAllMemberships() {
+  const userIds = Array.from(sessions.keys());
+  for (const userId of userIds) {
+    await refreshMembership(userId);
+  }
 }
 
 // ─── Express app ──────────────────────────────────────────────────────
@@ -287,8 +346,9 @@ app.use(cors());
 app.use(express.json());
 
 // ─── Frontend HTML ──────────────────────────────────────────────────────
-// (same as before, with login screen and dashboard, but no master logic)
-// We'll keep the same HTML that sends X-User-Id header and uses the same endpoints.
+// (identical to previous, omitted for brevity, but included in full code)
+// We'll embed the same HTML as before.
+
 const HTML = `<!DOCTYPE html>
 <html>
 <head>
@@ -1014,6 +1074,11 @@ setInterval(() => {
   }
 }, 60000);
 
+// ─── Membership sync ──────────────────────────────────────────────────
+setInterval(() => {
+  syncAllMemberships().catch(err => console.error('Membership sync error:', err));
+}, MEMBERSHIP_SYNC_INTERVAL);
+
 // ─── Start server ──────────────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\n' + '='.repeat(60));
@@ -1023,5 +1088,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('WebSocket: ws://localhost:' + PORT);
   console.log('Data directory: ' + DATA_DIR);
   console.log('Persistent storage: ' + (process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'));
+  console.log('Membership sync interval: ' + MEMBERSHIP_SYNC_INTERVAL/1000 + 's');
   console.log('='.repeat(60) + '\n');
 });
