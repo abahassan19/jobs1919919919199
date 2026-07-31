@@ -20,16 +20,22 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 console.log(`Data directory: ${DATA_DIR}`);
 console.log(`Persistent storage: ${process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'}`);
 
-// ─── Constants ──────────────────────────────────────────────────────
+// ─── Constants ──────────────────────────────────────────────────────────
 const MASTER_ID = 'mastermaster1234';
 const MAX_TERMS = 30;
-const MAX_ATTEMPTS = 5;
+const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
 
 // ─── In‑memory state ──────────────────────────────────────────────────
 const sessions = new Map();           // userId -> { lastActive, membership }
 const userCache = new Map();          // userId -> { terms, bargains }
 const loginAttempts = new Map();      // ip -> { attempts, firstAttempt, blockedUntil }
+
+// ─── Global job queue and workers ──────────────────────────────────
+let jobQueue = [];
+let activeJobs = new Map();
+let clients = new Map();
+let frontendClients = new Set();
 
 // ─── User data helpers ──────────────────────────────────────────────
 function getUserDir(userId) {
@@ -160,6 +166,93 @@ function processScrapedListings(userId, term, scraped, jobType) {
   return { added: newListings.length, newListings };
 }
 
+// ─── Broadcast functions ──────────────────────────────────────────────
+function broadcastBargains(userId, term, bargainsList) {
+  const msg = JSON.stringify({
+    type: 'bargain-alert',
+    userId,
+    term,
+    bargains: bargainsList
+  });
+  for (const ws of frontendClients) {
+    if (ws.userId === userId && ws.readyState === WebSocket.OPEN) {
+      ws.send(msg);
+    }
+  }
+}
+
+function broadcastUpdate(userId) {
+  const userData = getUserData(userId);
+  const termsWithStatus = userData.terms.map(t => ({
+    ...t,
+    active: Array.from(activeJobs.values()).some(j => j.userId === userId && j.term === t.term),
+    listingCount: loadUserHistory(userId, t.term).length,
+    bargainCount: (userData.bargains[t.term] || []).length
+  }));
+  const msg = JSON.stringify({
+    type: 'update',
+    userId,
+    terms: termsWithStatus,
+    clients: clients.size,
+    active: Array.from(activeJobs.values()).filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
+    queue: jobQueue.filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
+    bargains: userData.bargains
+  });
+  for (const ws of frontendClients) {
+    if (ws.userId === userId && ws.readyState === WebSocket.OPEN) {
+      ws.send(msg);
+    }
+  }
+}
+
+// ─── Job queue ──────────────────────────────────────────────────────────
+function processQueue() {
+  if (jobQueue.length === 0) return;
+  let availableClient = null;
+  for (let [id, info] of clients) {
+    if (!info.busy && info.ws.readyState === WebSocket.OPEN) {
+      availableClient = id;
+      break;
+    }
+  }
+  if (!availableClient) return;
+  let jobIndex = -1;
+  for (let i = 0; i < jobQueue.length; i++) {
+    const job = jobQueue[i];
+    let active = false;
+    for (const [key, act] of activeJobs) {
+      if (act.userId === job.userId && act.term === job.term) {
+        active = true;
+        break;
+      }
+    }
+    if (!active) {
+      jobIndex = i;
+      break;
+    }
+  }
+  if (jobIndex === -1) return;
+  const job = jobQueue.splice(jobIndex, 1)[0];
+  const clientInfo = clients.get(availableClient);
+  clientInfo.busy = true;
+  const jobId = job.userId + '-' + job.term + '-' + job.type + '-' + Date.now();
+  activeJobs.set(jobId, { userId: job.userId, term: job.term, type: job.type, clientId: availableClient, startTime: Date.now(), jobId });
+  clientInfo.ws.send(JSON.stringify({
+    type: 'job',
+    term: job.term,
+    jobId: jobId,
+    jobType: job.type
+  }));
+  console.log('Assigned ' + job.type + ' for "' + job.term + '" (user ' + job.userId + ') to ' + availableClient);
+}
+
+function queueJob(userId, term, type) {
+  if (jobQueue.some(j => j.userId === userId && j.term === term && j.type === type)) return;
+  if (Array.from(activeJobs.values()).some(j => j.userId === userId && j.term === term && j.type === type)) return;
+  jobQueue.push({ userId, term, type });
+  processQueue();
+}
+
 // ─── Rate limiting ──────────────────────────────────────────────────
 function checkRateLimit(ip) {
   const now = Date.now();
@@ -173,7 +266,7 @@ function checkRateLimit(ip) {
     loginAttempts.delete(ip);
     return true;
   }
-  if (record.attempts >= MAX_ATTEMPTS) {
+  if (record.attempts >= MAX_LOGIN_ATTEMPTS) {
     record.blockedUntil = now + LOCKOUT_MINUTES * 60 * 1000;
     loginAttempts.set(ip, record);
     return false;
@@ -183,12 +276,19 @@ function checkRateLimit(ip) {
   return true;
 }
 
+// ─── Membership check ──────────────────────────────────────────────────
+function hasMembership(userId) {
+  if (userId === MASTER_ID) return true;
+  const session = sessions.get(userId);
+  return session && !!session.membership;
+}
+
 // ─── Express app ──────────────────────────────────────────────────────
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// ─── Frontend HTML (login + dashboard) ──────────────────────────────
+// ─── Frontend HTML ──────────────────────────────────────────────────────
 const HTML = `<!DOCTYPE html>
 <html>
 <head>
@@ -200,7 +300,6 @@ const HTML = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-
 <!-- Login Screen -->
 <div id="loginScreen" class="login-container">
 <h2>Login</h2>
@@ -209,14 +308,12 @@ const HTML = `<!DOCTYPE html>
 <div id="loginError" class="error"></div>
 <button id="loginBtn">Login</button>
 </div>
-
-<!-- Dashboard (hidden until login) -->
+<!-- Dashboard -->
 <div id="dashboard" class="container hidden">
 <div class="header">
 <h1>Vinted Price Monitor</h1>
 <div><span id="userDisplay"></span> <button class="logout-btn" id="logoutBtn">Logout</button></div>
 </div>
-<!-- Master export/import buttons (hidden by default) -->
 <div id="masterActions" class="master-actions" style="display:none;">
 <button id="exportBtn">Export All Data</button>
 <button id="importBtn">Import Data</button>
@@ -243,7 +340,6 @@ const HTML = `<!DOCTYPE html>
 <div id="tab-workers" class="tab-content"><div class="card"><h3>Connected Workers</h3><div id="workersContainer"><div class="empty">No workers connected.</div></div></div></div>
 <div id="tab-log" class="tab-content"><div class="card"><h3>Activity Log</h3><div class="log" id="logContainer"><div class="info">System ready.</div></div></div></div>
 </div>
-
 <script>
 // ─── Global state ──────────────────────────────────────────────────
 let userId = null;
@@ -284,7 +380,6 @@ async function login() {
     const data = await res.json();
     if (res.ok) {
       userId = data.userId;
-      // Save to localStorage for autofill
       localStorage.setItem('vinted_userId', userId);
       showDashboard();
     } else {
@@ -312,13 +407,11 @@ function showDashboard() {
   loginScreen.classList.add('hidden');
   dashboard.classList.remove('hidden');
   userDisplay.textContent = 'User: ' + userId;
-  // Show master actions if master
   if (userId === 'mastermaster1234') {
     masterActions.style.display = 'flex';
   } else {
     masterActions.style.display = 'none';
   }
-  // Start WebSocket
   initWebSocket();
   fetchData();
   if (window.pollInterval) clearInterval(window.pollInterval);
@@ -331,7 +424,7 @@ function initWebSocket() {
   if (ws) ws.close();
   ws = new WebSocket('ws://' + window.location.host);
   ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'register-frontend', userId: userId }));
+    ws.send(JSON.stringify({ type: 'register-frontend', userId }));
   };
   ws.onmessage = (e) => {
     const d = JSON.parse(e.data);
@@ -342,9 +435,7 @@ function initWebSocket() {
       renderAll(d);
     }
   };
-  ws.onclose = () => {
-    setTimeout(initWebSocket, 5000);
-  };
+  ws.onclose = () => setTimeout(initWebSocket, 5000);
 }
 
 // ─── Render functions ──────────────────────────────────────────────
@@ -389,7 +480,7 @@ function renderTerms(terms) {
   html += '</tbody></table>';
   c.innerHTML = html;
 
-  // Attach event listeners
+  // Event listeners
   c.querySelectorAll('[data-action="remove"]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const term = btn.dataset.term;
@@ -504,11 +595,7 @@ async function fetchData() {
   try {
     const res = await authFetch(API_BASE + '/status');
     if (!res.ok) {
-      if (res.status === 401) {
-        // Unauthorized – logout
-        logout();
-        loginError.textContent = 'Session expired. Please login again.';
-      }
+      if (res.status === 401) { logout(); loginError.textContent = 'Session expired.'; }
       return;
     }
     const data = await res.json();
@@ -558,10 +645,7 @@ exportBtn.addEventListener('click', async () => {
   URL.revokeObjectURL(url);
   addLog('Export completed', 'success');
 });
-
-importBtn.addEventListener('click', () => {
-  importFile.click();
-});
+importBtn.addEventListener('click', () => importFile.click());
 importFile.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
@@ -591,7 +675,7 @@ loginBtn.addEventListener('click', login);
 loginIdInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
 logoutBtn.addEventListener('click', logout);
 
-// ─── Auto-login if userId in localStorage ─────────────────────────
+// ─── Auto-login ──────────────────────────────────────────────────
 const savedId = localStorage.getItem('vinted_userId');
 if (savedId) {
   loginIdInput.value = savedId;
@@ -608,7 +692,6 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-// ─── Initial log ──────────────────────────────────────────────────
 addLog('Dashboard ready. Please log in.', 'info');
 </script>
 </body>
@@ -626,11 +709,10 @@ app.post('/login', async (req, res) => {
     return res.status(429).json({ error: 'Too many failed attempts. Try again later.' });
   }
 
-  // Special case: master ID
   if (id === MASTER_ID) {
     sessions.set(id, { lastActive: Date.now(), membership: 'master' });
     loginAttempts.delete(ip);
-    return res.json({ userId: id, membership: 'master' });
+    return res.json({ userId: id });
   }
 
   try {
@@ -647,20 +729,19 @@ app.post('/login', async (req, res) => {
 
     sessions.set(id, { lastActive: Date.now(), membership: data.membership || null });
     loginAttempts.delete(ip);
-    res.json({ userId: id, membership: data.membership });
+    res.json({ userId: id });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ─── Middleware: authenticate all /api/* routes ────────────────────
+// ─── Middleware: require user ID header for all API routes ──────────
 app.use('/api', (req, res, next) => {
   const userId = req.headers['x-user-id'];
   if (!userId || !sessions.has(userId)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  // Update session activity
   sessions.set(userId, { ...sessions.get(userId), lastActive: Date.now() });
   req.userId = userId;
   next();
@@ -674,16 +755,15 @@ app.get('/api/status', (req, res) => {
   const userData = getUserData(userId);
   const termsWithStatus = userData.terms.map(t => ({
     ...t,
-    active: Array.from(globalActiveJobs.values()).some(j => j.userId === userId && j.term === t.term),
+    active: Array.from(activeJobs.values()).some(j => j.userId === userId && j.term === t.term),
     listingCount: loadUserHistory(userId, t.term).length,
-    bargainCount: (userData.bargains[t.term] || []).length,
-    scanning: t.scanning || false
+    bargainCount: (userData.bargains[t.term] || []).length
   }));
   res.json({
     terms: termsWithStatus,
-    clients: globalClients.size,
-    active: Array.from(globalActiveJobs.values()).filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
-    queue: globalJobQueue.filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
+    clients: clients.size,
+    active: Array.from(activeJobs.values()).filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
+    queue: jobQueue.filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
     bargains: userData.bargains
   });
 });
@@ -694,12 +774,11 @@ app.post('/api/terms', (req, res) => {
   const { term, thresholdPercent = 20, interval = 5 } = req.body;
   if (!term) return res.status(400).json({ error: 'Missing term' });
   const userData = getUserData(userId);
-  // Check membership
-  if (!checkMembership(userId)) {
-    return res.status(403).json({ error: 'No active membership. Please upgrade to add terms.' });
+  if (!hasMembership(userId)) {
+    return res.status(403).json({ error: 'No active membership. Please upgrade.' });
   }
   if (userData.terms.length >= MAX_TERMS) {
-    return res.status(409).json({ error: 'Maximum 30 terms reached. Remove some to add more.' });
+    return res.status(409).json({ error: 'Maximum 30 terms reached. Remove some.' });
   }
   if (userData.terms.find(t => t.term === term)) {
     return res.status(409).json({ error: 'Term already exists' });
@@ -733,13 +812,10 @@ app.post('/api/calculate-average', (req, res) => {
   const userData = getUserData(userId);
   const termObj = userData.terms.find(t => t.term === term);
   if (!termObj) return res.status(404).json({ error: 'Term not found' });
-  if (!checkMembership(userId)) {
+  if (!hasMembership(userId)) {
     return res.status(403).json({ error: 'No active membership.' });
   }
-  // Queue scan_all
-  globalJobQueue.push({ userId, term, type: 'scan_all' });
-  processQueue();
-  broadcastUpdate(userId);
+  queueJob(userId, term, 'scan_all');
   res.json({ success: true });
 });
 
@@ -754,7 +830,7 @@ app.post('/api/start-scan', (req, res) => {
   if (!termObj.averagePrice) {
     return res.status(400).json({ error: 'Average price not set. Please calculate average first.' });
   }
-  if (!checkMembership(userId)) {
+  if (!hasMembership(userId)) {
     return res.status(403).json({ error: 'No active membership.' });
   }
   if (termObj.scanning) {
@@ -762,9 +838,7 @@ app.post('/api/start-scan', (req, res) => {
   }
   termObj.scanning = true;
   saveUserTerms(userId, userData.terms);
-  globalJobQueue.push({ userId, term, type: 'scan_new' });
-  processQueue();
-  broadcastUpdate(userId);
+  queueJob(userId, term, 'scan_new');
   res.json({ success: true });
 });
 
@@ -778,8 +852,8 @@ app.post('/api/stop-scan', (req, res) => {
   if (!termObj) return res.status(404).json({ error: 'Term not found' });
   termObj.scanning = false;
   saveUserTerms(userId, userData.terms);
-  // Remove queued scan_new jobs for this user+term
-  globalJobQueue = globalJobQueue.filter(j => !(j.userId === userId && j.term === term && j.type === 'scan_new'));
+  // remove queued jobs
+  jobQueue = jobQueue.filter(j => !(j.userId === userId && j.term === term && j.type === 'scan_new'));
   broadcastUpdate(userId);
   res.json({ success: true });
 });
@@ -815,7 +889,7 @@ app.get('/api/master/export', (req, res) => {
   res.json(allData);
 });
 
-app.post('/api/master/import', express.json({ limit: '50mb' }), (req, res) => {
+app.post('/api/master/import', (req, res) => {
   if (req.userId !== MASTER_ID) return res.status(403).json({ error: 'Forbidden' });
   const data = req.body;
   if (!data || typeof data !== 'object') return res.status(400).json({ error: 'Invalid data' });
@@ -835,12 +909,6 @@ app.post('/api/master/import', express.json({ limit: '50mb' }), (req, res) => {
   res.json({ success: true, imported });
 });
 
-// ─── Global job queue and workers (shared) ──────────────────────────
-let globalJobQueue = [];
-let globalActiveJobs = new Map();
-let globalClients = new Map();
-let globalFrontendClients = new Set();
-
 // ─── WebSocket server ──────────────────────────────────────────────────
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, clientTracking: true });
@@ -859,8 +927,8 @@ wss.on('connection', (ws, req) => {
           userId = data.userId;
           if (userId && sessions.has(userId)) {
             ws.userId = userId;
-            globalFrontendClients.add(ws);
-            console.log(`Frontend connected for user ${userId}`);
+            frontendClients.add(ws);
+            console.log('Frontend connected for user ' + userId);
             broadcastUpdate(userId);
           } else {
             ws.close();
@@ -868,12 +936,12 @@ wss.on('connection', (ws, req) => {
           break;
         case 'register-worker':
           clientId = data.clientId || 'worker-' + Date.now();
-          if (globalClients.has(clientId)) {
-            const old = globalClients.get(clientId);
+          if (clients.has(clientId)) {
+            const old = clients.get(clientId);
             if (old.ws !== ws && old.ws.readyState === WebSocket.OPEN) old.ws.close();
           }
-          globalClients.set(clientId, { ws, busy: false, lastPing: Date.now() });
-          console.log('Worker registered: ' + clientId + ' (' + globalClients.size + ' total)');
+          clients.set(clientId, { ws, busy: false, lastPing: Date.now() });
+          console.log('Worker registered: ' + clientId + ' (' + clients.size + ' total)');
           ws.send(JSON.stringify({ type: 'registered', clientId }));
           processQueue();
           break;
@@ -882,7 +950,7 @@ wss.on('connection', (ws, req) => {
           if (!term || !listings) break;
           let job = null;
           let jobKey = null;
-          for (const [key, j] of globalActiveJobs) {
+          for (const [key, j] of activeJobs) {
             if (j.jobId === jobId) {
               job = j;
               jobKey = key;
@@ -896,11 +964,11 @@ wss.on('connection', (ws, req) => {
           const uid = job.userId;
           console.log('Job complete for "' + term + '" (' + (jobType || 'scan_new') + ') from ' + clientId + ' for user ' + uid);
           const result = processScrapedListings(uid, term, listings, jobType || 'scan_new');
-          if (clientId && globalClients.has(clientId)) {
-            globalClients.get(clientId).busy = false;
+          if (clientId && clients.has(clientId)) {
+            clients.get(clientId).busy = false;
           }
           if (jobKey) {
-            globalActiveJobs.delete(jobKey);
+            activeJobs.delete(jobKey);
           }
           ws.send(JSON.stringify({
             type: 'job-complete-ack',
@@ -917,7 +985,7 @@ wss.on('connection', (ws, req) => {
           const { term, error, jobId, jobType } = data;
           let job = null;
           let jobKey = null;
-          for (const [key, j] of globalActiveJobs) {
+          for (const [key, j] of activeJobs) {
             if (j.jobId === jobId) {
               job = j;
               jobKey = key;
@@ -927,14 +995,14 @@ wss.on('connection', (ws, req) => {
           if (job) {
             const uid = job.userId;
             console.log('Job failed for "' + term + '" (' + (jobType || 'scan_new') + ') from ' + clientId + ' for user ' + uid + ': ' + error);
-            if (clientId && globalClients.has(clientId)) {
-              globalClients.get(clientId).busy = false;
+            if (clientId && clients.has(clientId)) {
+              clients.get(clientId).busy = false;
             }
             if (jobKey) {
-              globalActiveJobs.delete(jobKey);
+              activeJobs.delete(jobKey);
             }
             if ((jobType || 'scan_new') === 'scan_new') {
-              globalJobQueue.push({ userId: uid, term, type: 'scan_new' });
+              jobQueue.push({ userId: uid, term, type: 'scan_new' });
             }
             processQueue();
             broadcastUpdate(uid);
@@ -944,8 +1012,8 @@ wss.on('connection', (ws, req) => {
           break;
         }
         case 'ping': {
-          if (clientId && globalClients.has(clientId)) {
-            globalClients.get(clientId).lastPing = Date.now();
+          if (clientId && clients.has(clientId)) {
+            clients.get(clientId).lastPing = Date.now();
           }
           ws.send(JSON.stringify({ type: 'pong' }));
           break;
@@ -960,27 +1028,27 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', (code) => {
     if (ws.isFrontend) {
-      globalFrontendClients.delete(ws);
+      frontendClients.delete(ws);
       console.log('Frontend disconnected' + (userId ? ' for user ' + userId : ''));
       return;
     }
     if (clientId) {
       let lostJobKey = null;
-      for (const [key, job] of globalActiveJobs) {
+      for (const [key, job] of activeJobs) {
         if (job.clientId === clientId) {
           lostJobKey = key;
           break;
         }
       }
-      globalClients.delete(clientId);
-      console.log('Worker disconnected: ' + clientId + ' (' + globalClients.size + ' remaining) code ' + code);
+      clients.delete(clientId);
+      console.log('Worker disconnected: ' + clientId + ' (' + clients.size + ' remaining) code ' + code);
       if (lostJobKey) {
-        const job = globalActiveJobs.get(lostJobKey);
+        const job = activeJobs.get(lostJobKey);
         if (job) {
           if (job.type === 'scan_new') {
-            globalJobQueue.push({ userId: job.userId, term: job.term, type: 'scan_new' });
+            jobQueue.push({ userId: job.userId, term: job.term, type: 'scan_new' });
           }
-          globalActiveJobs.delete(lostJobKey);
+          activeJobs.delete(lostJobKey);
           processQueue();
           broadcastUpdate(job.userId);
         }
@@ -993,127 +1061,48 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// ─── Job queue processor ──────────────────────────────────────────────
-function processQueue() {
-  if (globalJobQueue.length === 0) return;
-  let availableClient = null;
-  for (let [id, info] of globalClients) {
-    if (!info.busy && info.ws.readyState === WebSocket.OPEN) {
-      availableClient = id;
-      break;
+// ─── Heartbeat ──────────────────────────────────────────────────────────
+setInterval(() => {
+  const now = Date.now();
+  for (let [id, info] of clients) {
+    if (now - info.lastPing > 30000) {
+      console.log('Worker ' + id + ' stale, terminating');
+      info.ws.terminate();
+      clients.delete(id);
     }
   }
-  if (!availableClient) return;
-  let jobIndex = -1;
-  for (let i = 0; i < globalJobQueue.length; i++) {
-    const job = globalJobQueue[i];
-    let active = false;
-    for (const [key, act] of globalActiveJobs) {
-      if (act.userId === job.userId && act.term === job.term) {
-        active = true;
-        break;
-      }
-    }
-    if (!active) {
-      jobIndex = i;
-      break;
-    }
-  }
-  if (jobIndex === -1) return;
-  const job = globalJobQueue.splice(jobIndex, 1)[0];
-  const clientInfo = globalClients.get(availableClient);
-  clientInfo.busy = true;
-  const jobId = job.userId + '-' + job.term + '-' + job.type + '-' + Date.now();
-  const jobKey = jobId;
-  globalActiveJobs.set(jobKey, { userId: job.userId, term: job.term, type: job.type, clientId: availableClient, startTime: Date.now(), jobId });
-  clientInfo.ws.send(JSON.stringify({
-    type: 'job',
-    term: job.term,
-    jobId: jobId,
-    jobType: job.type
-  }));
-  console.log('Assigned ' + job.type + ' for "' + job.term + '" (user ' + job.userId + ') to ' + availableClient);
-}
+}, 10000);
 
-// ─── Broadcast update to a specific user's frontend ──────────────────
-function broadcastUpdate(userId) {
-  const userData = getUserData(userId);
-  const termsWithStatus = userData.terms.map(t => ({
-    ...t,
-    active: Array.from(globalActiveJobs.values()).some(j => j.userId === userId && j.term === t.term),
-    listingCount: loadUserHistory(userId, t.term).length,
-    bargainCount: (userData.bargains[t.term] || []).length
-  }));
-  const msg = JSON.stringify({
-    type: 'update',
-    userId: userId,
-    terms: termsWithStatus,
-    clients: globalClients.size,
-    active: Array.from(globalActiveJobs.values()).filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
-    queue: globalJobQueue.filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
-    bargains: userData.bargains
-  });
-  for (const ws of globalFrontendClients) {
-    if (ws.userId === userId && ws.readyState === WebSocket.OPEN) {
-      ws.send(msg);
-    }
-  }
-}
-
-// ─── Broadcast bargains ──────────────────────────────────────────────
-function broadcastBargains(userId, term, bargainsList) {
-  const msg = JSON.stringify({
-    type: 'bargain-alert',
-    userId: userId,
-    term,
-    bargains: bargainsList
-  });
-  for (const ws of globalFrontendClients) {
-    if (ws.userId === userId && ws.readyState === WebSocket.OPEN) {
-      ws.send(msg);
-    }
-  }
-}
-
-// ─── Membership check helper (synchronous) ───────────────────────────
-function checkMembership(userId) {
-  const session = sessions.get(userId);
-  if (!session) return false;
-  // Master always allowed
-  if (userId === MASTER_ID) return true;
-  return !!session.membership; // null/empty means no membership
-}
-
-// ─── Scheduler (runs every minute) ────────────────────────────────────
+// ─── Scheduler ──────────────────────────────────────────────────────────
 setInterval(() => {
   for (const [userId, session] of sessions) {
-    if (!session.membership && userId !== MASTER_ID) continue; // skip non‑members
+    if (!hasMembership(userId)) continue;
     const userData = getUserData(userId);
     if (!userData) continue;
     for (const termObj of userData.terms) {
       if (!termObj.scanning) continue;
       const term = termObj.term;
       const interval = termObj.interval || 5;
-      const active = Array.from(globalActiveJobs.values()).some(j => j.userId === userId && j.term === term && j.type === 'scan_new');
-      const queued = globalJobQueue.some(j => j.userId === userId && j.term === term && j.type === 'scan_new');
+      const active = Array.from(activeJobs.values()).some(j => j.userId === userId && j.term === term && j.type === 'scan_new');
+      const queued = jobQueue.some(j => j.userId === userId && j.term === term && j.type === 'scan_new');
       if (!active && !queued) {
         const history = loadUserHistory(userId, term);
         if (history.length > 0) {
           const last = new Date(history[0]?.firstSeen || 0);
           const mins = (Date.now() - last.getTime()) / 60000;
           if (mins >= interval) {
-            globalJobQueue.push({ userId, term, type: 'scan_new' });
+            jobQueue.push({ userId, term, type: 'scan_new' });
             console.log('Scheduling scan_new for "' + term + '" (user ' + userId + ') (last ' + Math.round(mins) + 'm ago)');
           }
         } else {
-          globalJobQueue.push({ userId, term, type: 'scan_new' });
+          jobQueue.push({ userId, term, type: 'scan_new' });
           console.log('Scheduling first scan_new for "' + term + '" (user ' + userId + ')');
         }
       }
     }
   }
   processQueue();
-  // Broadcast updates to all active users
+  // Broadcast updates to active users
   for (const [userId] of sessions) {
     broadcastUpdate(userId);
   }
