@@ -325,9 +325,34 @@ const HTML = `<!DOCTYPE html>
 <title>Vinted Price Monitor</title>
 <style>
 *{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f5f6fa}.container{max-width:1400px;margin:0 auto;padding:20px}.login-container{max-width:400px;margin:100px auto;background:#fff;border-radius:8px;padding:30px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.login-container h2{margin-top:0}.login-container input{width:100%;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px}.login-container button{width:100%;padding:12px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer}.login-container .error{color:#e74c3c;font-size:14px;margin-top:5px}.hidden{display:none}h1{font-weight:400;color:#2c3e50}.card{background:#fff;border-radius:8px;padding:20px;margin-bottom:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.flex{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.flex label{font-weight:500;min-width:80px}input,select{padding:8px 12px;border:1px solid #ddd;border-radius:4px;font-size:14px;background:#fff}input{flex:1;min-width:160px}button{padding:8px 16px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500}button:hover{background:#2980b9}button.secondary{background:#95a5a6}button.secondary:hover{background:#7f8c8d}button.danger{background:#e74c3c}button.danger:hover{background:#c0392b}button.success{background:#2ecc71}button.success:hover{background:#27ae60}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #ecf0f1}th{background:#f8f9fa;font-weight:600;color:#2c3e50}.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}.badge-active{background:#2ecc71;color:#fff}.badge-idle{background:#bdc3c7;color:#2c3e50}.badge-bargain{background:#e74c3c;color:#fff}.tabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid #ddd}.tab{padding:10px 16px;cursor:pointer;border:none;background:none;font-weight:500;color:#7f8c8d}.tab.active{color:#3498db;border-bottom:2px solid #3498db}.tab-content{display:none}.tab-content.active{display:block}.log{background:#2c3e50;color:#ecf0f1;padding:10px;border-radius:4px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:12px}.log .timestamp{color:#7f8c8d}.log .info{color:#3498db}.log .success{color:#2ecc71}.log .warning{color:#f1c40f}.log .bargain{color:#e74c3c;font-weight:700}.bargain-item{background:#fef9e7;border-left:4px solid #e74c3c;padding:10px;margin:5px 0;border-radius:4px}.bargain-item strong{display:block;margin-bottom:4px}.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0}.stat-box{background:#f8f9fa;padding:10px;border-radius:4px;text-align:center}.stat-box .value{font-size:20px;font-weight:600;color:#2c3e50}.stat-box .label{font-size:12px;color:#7f8c8d}.empty{color:#95a5a6;text-align:center;padding:20px}.help-text{font-size:12px;color:#95a5a6;margin-top:4px}.inline-actions{display:flex;gap:6px;flex-wrap:wrap}.header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}.logout-btn{background:#e74c3c;color:#fff;padding:6px 12px;border:none;border-radius:4px;cursor:pointer}
+
+/* Password Popup */
+.password-popup-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;backdrop-filter:blur(4px)}
+.password-popup{background:#fff;border-radius:16px;padding:40px;max-width:500px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.5);animation:popIn 0.3s ease-out}
+.password-popup h2{color:#e74c3c;margin-top:0;font-size:28px}
+.password-popup .password{background:#f8f9fa;padding:15px;border-radius:8px;font-size:32px;font-weight:700;font-family:monospace;letter-spacing:2px;color:#2c3e50;margin:20px 0;border:2px dashed #3498db}
+.password-popup p{color:#666;line-height:1.6;margin-bottom:20px}
+.password-popup .warning{color:#e74c3c;font-weight:600;font-size:14px}
+.password-popup button{padding:12px 40px;background:#3498db;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;transition:background 0.2s}
+.password-popup button:hover{background:#2980b9}
+@keyframes popIn{0%{transform:scale(0.8);opacity:0}100%{transform:scale(1);opacity:1}}
 </style>
 </head>
 <body>
+
+<!-- Password Popup -->
+<div id="passwordPopup" class="password-popup-overlay">
+<div class="password-popup">
+<h2>🔑 Your Access Code</h2>
+<p>Hey! Your password is:</p>
+<div class="password" id="displayPassword">3498374473</div>
+<p><strong>Write this down so it won't get lost!</strong></p>
+<p class="warning">⚠️ You will need this code to log in.</p>
+<br>
+<button id="dismissPopup">I've saved my password</button>
+</div>
+</div>
+
 <!-- Login Screen -->
 <div id="loginScreen" class="login-container">
 <h2>Login</h2>
@@ -337,6 +362,7 @@ const HTML = `<!DOCTYPE html>
 <div id="loginError" class="error"></div>
 <button id="loginBtn">Login</button>
 </div>
+
 <!-- Dashboard -->
 <div id="dashboard" class="container hidden">
 <div class="header">
@@ -364,6 +390,7 @@ const HTML = `<!DOCTYPE html>
 <div id="tab-workers" class="tab-content"><div class="card"><h3>Connected Workers</h3><div id="workersContainer"><div class="empty">No workers connected.</div></div></div></div>
 <div id="tab-log" class="tab-content"><div class="card"><h3>Activity Log</h3><div class="log" id="logContainer"><div class="info">System ready.</div></div></div></div>
 </div>
+
 <script>
 // ─── Global state ──────────────────────────────────────────────────
 let userId = null;
@@ -379,6 +406,27 @@ const loginBtn = document.getElementById('loginBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const userDisplay = document.getElementById('userDisplay');
 const termLimitWarning = document.getElementById('termLimitWarning');
+const passwordPopup = document.getElementById('passwordPopup');
+const dismissPopup = document.getElementById('dismissPopup');
+
+// ─── Password popup logic ──────────────────────────────────────────
+// Check if we should show the popup (if referral param is present)
+const urlParams = new URLSearchParams(window.location.search);
+const referral = urlParams.get('referral');
+if (referral) {
+  document.getElementById('displayPassword').textContent = referral;
+  passwordPopup.style.display = 'flex';
+} else {
+  passwordPopup.style.display = 'none';
+}
+
+// Dismiss popup
+dismissPopup.addEventListener('click', () => {
+  passwordPopup.style.display = 'none';
+  // Remove referral from URL without reload
+  const newUrl = window.location.origin + window.location.pathname;
+  window.history.pushState({}, '', newUrl);
+});
 
 // ─── Helper: fetch with auth header ──────────────────────────────
 async function authFetch(url, options = {}) {
@@ -675,6 +723,14 @@ addLog('Dashboard ready. Please log in.', 'info');
 
 app.get('/', (req, res) => res.send(HTML));
 
+// ─── Route for /referral=xxx ──────────────────────────────────────────
+app.get('/referral', (req, res) => {
+  const referralCode = req.query.referral || '3498374473';
+  // Return the same HTML but with the referral parameter in the URL
+  // We'll redirect to the main page with the referral query param
+  res.redirect('/?referral=' + encodeURIComponent(referralCode));
+});
+
 // ─── Login endpoint ──────────────────────────────────────────────────
 app.post('/login', async (req, res) => {
   const { id } = req.body;
@@ -703,6 +759,7 @@ app.post('/login', async (req, res) => {
 app.use((req, res, next) => {
   // Skip auth for login and static root
   if (req.path === '/login' || req.path === '/') return next();
+  if (req.path === '/referral') return next();
   const userId = req.headers['x-user-id'];
   if (!userId || !sessions.has(userId)) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -1051,5 +1108,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('Data directory: ' + DATA_DIR);
   console.log('Persistent storage: ' + (process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'));
   console.log('Membership sync interval: ' + MEMBERSHIP_SYNC_INTERVAL/1000 + 's');
+  console.log('Referral route: /referral?referral=YOUR_CODE');
   console.log('='.repeat(60) + '\n');
 });
