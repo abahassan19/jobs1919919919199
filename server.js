@@ -18,8 +18,8 @@ console.log(`Persistent storage: ${process.env.RENDER_PERSISTENT_DISK ? 'enabled
 // ─── State ──────────────────────────────────────────────────────────────
 let searchTerms = [];                 // { term, averagePrice, thresholdPercent, interval }
 let clients = new Map();              // clientId -> { ws, busy, lastPing }
-let jobQueue = [];                   // term strings (simple queue)
-let activeJobs = new Map();           // term -> { clientId, jobId, startTime }
+let jobQueue = [];                   // { term, type }  type = 'scan_new' or 'scan_all'
+let activeJobs = new Map();           // term -> { clientId, jobId, startTime, type }
 let bargains = {};
 let frontendClients = new Set();
 
@@ -88,7 +88,27 @@ function analyzePrices(listings, averagePrice, thresholdPercent) {
   };
 }
 
-function processScrapedListings(term, scraped) {
+// ─── Process scraped data ─────────────────────────────────────────────
+function processScrapedListings(term, scraped, jobType) {
+  // For scan_all: compute average from scraped data, don't save or detect bargains
+  if (jobType === 'scan_all') {
+    const prices = scraped
+      .map(l => parseFloat(l.price.replace(/[^0-9.]/g, '')))
+      .filter(p => !isNaN(p) && p > 0);
+    if (prices.length > 0) {
+      const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+      const termObj = searchTerms.find(t => t.term === term);
+      if (termObj) {
+        termObj.averagePrice = Math.round(avg * 100) / 100;
+        saveTerms();
+        console.log(`Average for "${term}" set to £${termObj.averagePrice}`);
+        broadcastUpdate();
+      }
+    }
+    return { added: 0, newListings: [], averageComputed: true };
+  }
+
+  // Normal scan_new flow: deduplicate and save
   const existing = loadHistory(term);
   const existingLinks = new Set(existing.map(item => item.link));
   const newListings = scraped.filter(item => !existingLinks.has(item.link));
@@ -100,10 +120,10 @@ function processScrapedListings(term, scraped) {
   const updated = [...newListings, ...existing];
   saveHistory(term, updated);
   saveUnique(term, newListings);
-  
-  // Analyze bargains on new listings
+
+  // Only detect bargains if average is set
   const termConfig = searchTerms.find(t => t.term === term);
-  if (termConfig) {
+  if (termConfig && termConfig.averagePrice !== null && termConfig.averagePrice !== undefined) {
     const analysis = analyzePrices(updated, termConfig.averagePrice, termConfig.thresholdPercent);
     if (analysis.bargains.length > 0) {
       bargains[term] = analysis.bargains;
@@ -137,15 +157,15 @@ function broadcastUpdate() {
   for (const ws of frontendClients) if (ws.readyState === WebSocket.OPEN) ws.send(msg);
 }
 
-// ─── Job queue management ────────────────────────────────────────────
+// ─── Job queue ──────────────────────────────────────────────────────────
 function scheduleJobs() {
   const activeTerms = new Set(searchTerms.map(t => t.term));
-  jobQueue = jobQueue.filter(term => activeTerms.has(term));
+  jobQueue = jobQueue.filter(job => activeTerms.has(job.term));
   
   for (const termObj of searchTerms) {
     const term = termObj.term;
-    if (!activeJobs.has(term) && !jobQueue.includes(term)) {
-      jobQueue.push(term);
+    if (!activeJobs.has(term) && !jobQueue.some(j => j.term === term && j.type === 'scan_new')) {
+      jobQueue.push({ term, type: 'scan_new' });
     }
   }
   processQueue();
@@ -167,19 +187,20 @@ function processQueue() {
     return;
   }
   
-  const term = jobQueue.shift();
+  const job = jobQueue.shift();
   const clientInfo = clients.get(availableClient);
   clientInfo.busy = true;
-  const jobId = `${term}-${Date.now()}`;
-  activeJobs.set(term, { clientId: availableClient, startTime: Date.now(), jobId });
+  const jobId = `${job.term}-${job.type}-${Date.now()}`;
+  activeJobs.set(job.term, { clientId: availableClient, startTime: Date.now(), jobId, type: job.type });
   
   clientInfo.ws.send(JSON.stringify({
     type: 'job',
-    term: term,
-    jobId: jobId
+    term: job.term,
+    jobId: jobId,
+    jobType: job.type
   }));
   
-  console.log(`Assigned job "${term}" to ${availableClient}`);
+  console.log(`Assigned ${job.type} for "${job.term}" to ${availableClient}`);
   broadcastUpdate();
 }
 
@@ -237,7 +258,6 @@ const HTML = `<!DOCTYPE html>
     .stat-box .label { font-size: 12px; color: #7f8c8d; }
     .empty { color: #95a5a6; text-align: center; padding: 20px; }
     .help-text { font-size: 12px; color: #95a5a6; margin-top: 4px; }
-    .avg-display { font-weight: 600; color: #2c3e50; }
     .inline-actions { display: flex; gap: 6px; flex-wrap: wrap; }
   </style>
 </head>
@@ -416,9 +436,12 @@ const HTML = `<!DOCTYPE html>
       + '<div class="stat-box"><div class="value">' + (activeJobs ? activeJobs.length : 0) + '</div><div class="label">Active Jobs</div></div>'
       + '</div>';
     if (activeJobs && activeJobs.length > 0) {
-      html += '<table><thead><tr><th>Term</th><th>Worker</th></tr></thead><tbody>';
+      html += '<table><thead><tr><th>Term</th><th>Type</th></tr></thead><tbody>';
+      // activeJobs is an array of term strings, but we need to get type from activeJobs map
+      // We'll use the data passed from server which includes type
+      // For simplicity, just show term names
       activeJobs.forEach(term => {
-        html += '<tr><td>' + term + '</td><td>Processing</td></tr>';
+        html += '<tr><td>' + term + '</td><td>processing</td></tr>';
       });
       html += '</tbody></table>';
     }
@@ -533,7 +556,8 @@ app.post('/terms', (req, res) => {
   const obj = { term, averagePrice: null, thresholdPercent: parseInt(thresholdPercent), interval: parseInt(interval) };
   searchTerms.push(obj);
   saveTerms();
-  jobQueue.push(term);
+  // Schedule a scan_new job immediately
+  jobQueue.push({ term, type: 'scan_new' });
   processQueue();
   broadcastUpdate();
   res.json({ success: true, term: obj });
@@ -545,7 +569,7 @@ app.delete('/terms/:term', (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   searchTerms.splice(idx, 1);
   saveTerms();
-  jobQueue = jobQueue.filter(t => t !== term);
+  jobQueue = jobQueue.filter(j => j.term !== term);
   activeJobs.delete(term);
   delete bargains[term];
   broadcastUpdate();
@@ -558,23 +582,19 @@ app.post('/calculate-average', (req, res) => {
   const termObj = searchTerms.find(t => t.term === term);
   if (!termObj) return res.status(404).json({ error: 'Term not found' });
   
-  // Check if already active
+  // Check if already active or queued
   if (activeJobs.has(term)) {
     return res.status(409).json({ error: 'Scan already in progress' });
   }
-  
-  // Add a special job for calculating average
-  // We'll use the existing job system but with a flag
-  // The client will scrape and return all listings, we compute average
-  // For now, we just trigger a normal job and compute after
-  if (!jobQueue.includes(term)) {
-    jobQueue.push(term);
-    processQueue();
-    broadcastUpdate();
-    res.json({ success: true, message: 'Average calculation started' });
-  } else {
-    res.status(409).json({ error: 'Job already queued' });
+  if (jobQueue.some(j => j.term === term && j.type === 'scan_all')) {
+    return res.status(409).json({ error: 'Average calculation already queued' });
   }
+  
+  // Add scan_all job to the front of the queue
+  jobQueue.unshift({ term, type: 'scan_all' });
+  processQueue();
+  broadcastUpdate();
+  res.json({ success: true, message: 'Average calculation started' });
 });
 
 app.get('/searches', (req, res) => {
@@ -625,13 +645,13 @@ wss.on('connection', (ws, req) => {
           break;
           
         case 'job-complete': {
-          const { term, listings, jobId } = data;
+          const { term, listings, jobId, jobType } = data;
           if (!term || !listings) break;
           
-          console.log(`Job complete for "${term}" from ${clientId}`);
+          console.log(`Job complete for "${term}" (${jobType || 'scan_new'}) from ${clientId}`);
           
-          // Process the scraped data
-          const result = processScrapedListings(term, listings);
+          // Process based on job type
+          const result = processScrapedListings(term, listings, jobType || 'scan_new');
           
           // Mark client as not busy
           if (clientId && clients.has(clientId)) {
@@ -647,11 +667,11 @@ wss.on('connection', (ws, req) => {
           ws.send(JSON.stringify({
             type: 'job-complete-ack',
             term,
-            added: result.added,
-            newListings: result.newListings
+            added: result.added || 0,
+            newListings: result.newListings || []
           }));
           
-          console.log(`Job complete for "${term}" - added ${result.added} new listings`);
+          console.log(`Job complete for "${term}" - added ${result.added || 0} new`);
           
           // Schedule next jobs
           scheduleJobs();
@@ -660,8 +680,8 @@ wss.on('connection', (ws, req) => {
         }
         
         case 'job-failed': {
-          const { term, error } = data;
-          console.log(`Job failed for "${term}" from ${clientId}: ${error}`);
+          const { term, error, jobType } = data;
+          console.log(`Job failed for "${term}" (${jobType || 'scan_new'}) from ${clientId}: ${error}`);
           
           // Mark client as not busy
           if (clientId && clients.has(clientId)) {
@@ -673,12 +693,12 @@ wss.on('connection', (ws, req) => {
             activeJobs.delete(term);
           }
           
-          // Re-add to queue for retry
-          if (!jobQueue.includes(term)) {
-            jobQueue.push(term);
+          // Re-add to queue if it was a scan_new job (scan_all should not retry automatically)
+          const type = jobType || 'scan_new';
+          if (type === 'scan_new' && !jobQueue.some(j => j.term === term && j.type === 'scan_new')) {
+            jobQueue.push({ term, type: 'scan_new' });
           }
           
-          // Process next job
           processQueue();
           broadcastUpdate();
           break;
@@ -700,32 +720,31 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  ws.on('close', (code, reason) => {
+  ws.on('close', (code) => {
     if (ws.isFrontend) {
       frontendClients.delete(ws);
       console.log('Frontend disconnected');
-    } else if (clientId) {
-      // Check if this worker had an active job
-      let lostJob = null;
-      for (let [term, job] of activeJobs) {
+      return;
+    }
+    if (clientId) {
+      // Find any active job for this client
+      let lostTerm = null;
+      for (const [term, job] of activeJobs) {
         if (job.clientId === clientId) {
-          lostJob = term;
+          lostTerm = term;
+          activeJobs.delete(term);
           break;
         }
       }
-      
       clients.delete(clientId);
-      console.log(`Worker disconnected: ${clientId} (${clients.size} remaining) - code ${code}`);
-      
-      if (lostJob) {
-        activeJobs.delete(lostJob);
-        if (!jobQueue.includes(lostJob)) {
-          jobQueue.push(lostJob);
+      console.log(`Worker disconnected: ${clientId} (${clients.size} remaining) code ${code}`);
+      if (lostTerm) {
+        // Re-queue scan_new only
+        if (!jobQueue.some(j => j.term === lostTerm && j.type === 'scan_new')) {
+          jobQueue.push({ term: lostTerm, type: 'scan_new' });
         }
-        console.log(`Re-queued job "${lostJob}" from disconnected worker`);
         processQueue();
       }
-      
       broadcastUpdate();
     }
   });
@@ -735,7 +754,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// ─── Heartbeat check for stale workers ──────────────────────────────
+// ─── Heartbeat check ──────────────────────────────────────────────────
 setInterval(() => {
   const now = Date.now();
   for (let [id, info] of clients) {
@@ -747,33 +766,29 @@ setInterval(() => {
   }
 }, 10000);
 
-// ─── Job scheduler (runs every minute) ──────────────────────────────
+// ─── Scheduler ─────────────────────────────────────────────────────────
 setInterval(() => {
   for (const termObj of searchTerms) {
     const term = termObj.term;
     const interval = termObj.interval || 5;
-    
-    // Check if term needs scraping based on last seen time
-    if (!activeJobs.has(term) && !jobQueue.includes(term)) {
+    if (!activeJobs.has(term) && !jobQueue.some(j => j.term === term && j.type === 'scan_new')) {
       const history = loadHistory(term);
       if (history.length > 0) {
-        const lastScraped = new Date(history[0]?.firstSeen || 0);
-        const minutesSince = (Date.now() - lastScraped.getTime()) / 60000;
-        if (minutesSince >= interval) {
-          jobQueue.push(term);
-          console.log(`Scheduling "${term}" (last scraped ${Math.round(minutesSince)}m ago)`);
+        const last = new Date(history[0]?.firstSeen || 0);
+        const mins = (Date.now() - last.getTime()) / 60000;
+        if (mins >= interval) {
+          jobQueue.push({ term, type: 'scan_new' });
+          console.log(`Scheduling scan_new for "${term}" (last ${Math.round(mins)}m ago)`);
         }
       } else {
-        // Never scraped, schedule immediately
-        jobQueue.push(term);
-        console.log(`Scheduling "${term}" for first scrape`);
+        jobQueue.push({ term, type: 'scan_new' });
+        console.log(`Scheduling scan_new for "${term}" (first scan)`);
       }
     }
   }
-  
   processQueue();
   broadcastUpdate();
-}, 60000); // Every minute
+}, 60000);
 
 // ─── Start server ──────────────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
@@ -787,7 +802,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`${searchTerms.length} terms loaded`);
   console.log(`${'='.repeat(60)}\n`);
   
-  // Initial job scheduling
   setTimeout(() => {
     scheduleJobs();
     broadcastUpdate();
