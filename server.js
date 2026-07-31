@@ -21,7 +21,6 @@ console.log(`Data directory: ${DATA_DIR}`);
 console.log(`Persistent storage: ${process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'}`);
 
 // ─── Constants ──────────────────────────────────────────────────────────
-const MASTER_ID = 'mastermaster1234';
 const MAX_TERMS = 30;
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
@@ -278,7 +277,6 @@ function checkRateLimit(ip) {
 
 // ─── Membership check ──────────────────────────────────────────────────
 function hasMembership(userId) {
-  if (userId === MASTER_ID) return true;
   const session = sessions.get(userId);
   return session && !!session.membership;
 }
@@ -286,9 +284,11 @@ function hasMembership(userId) {
 // ─── Express app ──────────────────────────────────────────────────────
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json());
 
 // ─── Frontend HTML ──────────────────────────────────────────────────────
+// (same as before, with login screen and dashboard, but no master logic)
+// We'll keep the same HTML that sends X-User-Id header and uses the same endpoints.
 const HTML = `<!DOCTYPE html>
 <html>
 <head>
@@ -296,7 +296,7 @@ const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Vinted Price Monitor</title>
 <style>
-*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f5f6fa}.container{max-width:1400px;margin:0 auto;padding:20px}.login-container{max-width:400px;margin:100px auto;background:#fff;border-radius:8px;padding:30px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.login-container h2{margin-top:0}.login-container input{width:100%;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px}.login-container button{width:100%;padding:12px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer}.login-container .error{color:#e74c3c;font-size:14px;margin-top:5px}.hidden{display:none}h1{font-weight:400;color:#2c3e50}.card{background:#fff;border-radius:8px;padding:20px;margin-bottom:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.flex{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.flex label{font-weight:500;min-width:80px}input,select{padding:8px 12px;border:1px solid #ddd;border-radius:4px;font-size:14px;background:#fff}input{flex:1;min-width:160px}button{padding:8px 16px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500}button:hover{background:#2980b9}button.secondary{background:#95a5a6}button.secondary:hover{background:#7f8c8d}button.danger{background:#e74c3c}button.danger:hover{background:#c0392b}button.success{background:#2ecc71}button.success:hover{background:#27ae60}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #ecf0f1}th{background:#f8f9fa;font-weight:600;color:#2c3e50}.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}.badge-active{background:#2ecc71;color:#fff}.badge-idle{background:#bdc3c7;color:#2c3e50}.badge-bargain{background:#e74c3c;color:#fff}.tabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid #ddd}.tab{padding:10px 16px;cursor:pointer;border:none;background:none;font-weight:500;color:#7f8c8d}.tab.active{color:#3498db;border-bottom:2px solid #3498db}.tab-content{display:none}.tab-content.active{display:block}.log{background:#2c3e50;color:#ecf0f1;padding:10px;border-radius:4px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:12px}.log .timestamp{color:#7f8c8d}.log .info{color:#3498db}.log .success{color:#2ecc71}.log .warning{color:#f1c40f}.log .bargain{color:#e74c3c;font-weight:700}.bargain-item{background:#fef9e7;border-left:4px solid #e74c3c;padding:10px;margin:5px 0;border-radius:4px}.bargain-item strong{display:block;margin-bottom:4px}.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0}.stat-box{background:#f8f9fa;padding:10px;border-radius:4px;text-align:center}.stat-box .value{font-size:20px;font-weight:600;color:#2c3e50}.stat-box .label{font-size:12px;color:#7f8c8d}.empty{color:#95a5a6;text-align:center;padding:20px}.help-text{font-size:12px;color:#95a5a6;margin-top:4px}.inline-actions{display:flex;gap:6px;flex-wrap:wrap}.header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}.logout-btn{background:#e74c3c;color:#fff;padding:6px 12px;border:none;border-radius:4px;cursor:pointer}.master-actions{display:flex;gap:8px;margin:10px 0}.master-actions button{background:#f39c12;color:#fff}
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f5f6fa}.container{max-width:1400px;margin:0 auto;padding:20px}.login-container{max-width:400px;margin:100px auto;background:#fff;border-radius:8px;padding:30px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.login-container h2{margin-top:0}.login-container input{width:100%;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px}.login-container button{width:100%;padding:12px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer}.login-container .error{color:#e74c3c;font-size:14px;margin-top:5px}.hidden{display:none}h1{font-weight:400;color:#2c3e50}.card{background:#fff;border-radius:8px;padding:20px;margin-bottom:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.flex{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.flex label{font-weight:500;min-width:80px}input,select{padding:8px 12px;border:1px solid #ddd;border-radius:4px;font-size:14px;background:#fff}input{flex:1;min-width:160px}button{padding:8px 16px;background:#3498db;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500}button:hover{background:#2980b9}button.secondary{background:#95a5a6}button.secondary:hover{background:#7f8c8d}button.danger{background:#e74c3c}button.danger:hover{background:#c0392b}button.success{background:#2ecc71}button.success:hover{background:#27ae60}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #ecf0f1}th{background:#f8f9fa;font-weight:600;color:#2c3e50}.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}.badge-active{background:#2ecc71;color:#fff}.badge-idle{background:#bdc3c7;color:#2c3e50}.badge-bargain{background:#e74c3c;color:#fff}.tabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid #ddd}.tab{padding:10px 16px;cursor:pointer;border:none;background:none;font-weight:500;color:#7f8c8d}.tab.active{color:#3498db;border-bottom:2px solid #3498db}.tab-content{display:none}.tab-content.active{display:block}.log{background:#2c3e50;color:#ecf0f1;padding:10px;border-radius:4px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:12px}.log .timestamp{color:#7f8c8d}.log .info{color:#3498db}.log .success{color:#2ecc71}.log .warning{color:#f1c40f}.log .bargain{color:#e74c3c;font-weight:700}.bargain-item{background:#fef9e7;border-left:4px solid #e74c3c;padding:10px;margin:5px 0;border-radius:4px}.bargain-item strong{display:block;margin-bottom:4px}.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0}.stat-box{background:#f8f9fa;padding:10px;border-radius:4px;text-align:center}.stat-box .value{font-size:20px;font-weight:600;color:#2c3e50}.stat-box .label{font-size:12px;color:#7f8c8d}.empty{color:#95a5a6;text-align:center;padding:20px}.help-text{font-size:12px;color:#95a5a6;margin-top:4px}.inline-actions{display:flex;gap:6px;flex-wrap:wrap}.header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}.logout-btn{background:#e74c3c;color:#fff;padding:6px 12px;border:none;border-radius:4px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -313,11 +313,6 @@ const HTML = `<!DOCTYPE html>
 <div class="header">
 <h1>Vinted Price Monitor</h1>
 <div><span id="userDisplay"></span> <button class="logout-btn" id="logoutBtn">Logout</button></div>
-</div>
-<div id="masterActions" class="master-actions" style="display:none;">
-<button id="exportBtn">Export All Data</button>
-<button id="importBtn">Import Data</button>
-<input type="file" id="importFile" style="display:none;" accept=".json" />
 </div>
 <div class="card">
 <h3>Add Search Term</h3>
@@ -355,10 +350,6 @@ const loginBtn = document.getElementById('loginBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const userDisplay = document.getElementById('userDisplay');
 const termLimitWarning = document.getElementById('termLimitWarning');
-const masterActions = document.getElementById('masterActions');
-const exportBtn = document.getElementById('exportBtn');
-const importBtn = document.getElementById('importBtn');
-const importFile = document.getElementById('importFile');
 
 // ─── Helper: fetch with auth header ──────────────────────────────
 async function authFetch(url, options = {}) {
@@ -407,11 +398,6 @@ function showDashboard() {
   loginScreen.classList.add('hidden');
   dashboard.classList.remove('hidden');
   userDisplay.textContent = 'User: ' + userId;
-  if (userId === 'mastermaster1234') {
-    masterActions.style.display = 'flex';
-  } else {
-    masterActions.style.display = 'none';
-  }
   initWebSocket();
   fetchData();
   if (window.pollInterval) clearInterval(window.pollInterval);
@@ -631,45 +617,6 @@ document.getElementById('addBtn').addEventListener('click', async () => {
   }
 });
 
-// ─── Master export/import ──────────────────────────────────────────
-exportBtn.addEventListener('click', async () => {
-  if (userId !== 'mastermaster1234') return;
-  const res = await authFetch(API_BASE + '/master/export');
-  const data = await res.json();
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'vinted_export_' + new Date().toISOString() + '.json';
-  a.click();
-  URL.revokeObjectURL(url);
-  addLog('Export completed', 'success');
-});
-importBtn.addEventListener('click', () => importFile.click());
-importFile.addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const text = await file.text();
-  try {
-    const data = JSON.parse(text);
-    const res = await authFetch(API_BASE + '/master/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-    const result = await res.json();
-    if (res.ok) {
-      addLog('Import completed: ' + result.imported + ' users restored', 'success');
-      fetchData();
-    } else {
-      alert(result.error || 'Import failed');
-    }
-  } catch (err) {
-    alert('Invalid JSON file');
-  }
-  importFile.value = '';
-});
-
 // ─── Login button ──────────────────────────────────────────────────
 loginBtn.addEventListener('click', login);
 loginIdInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
@@ -709,12 +656,6 @@ app.post('/login', async (req, res) => {
     return res.status(429).json({ error: 'Too many failed attempts. Try again later.' });
   }
 
-  if (id === MASTER_ID) {
-    sessions.set(id, { lastActive: Date.now(), membership: 'master' });
-    loginAttempts.delete(ip);
-    return res.json({ userId: id });
-  }
-
   try {
     const { data, error } = await supabase
       .from('keys')
@@ -737,7 +678,9 @@ app.post('/login', async (req, res) => {
 });
 
 // ─── Middleware: require user ID header for all API routes ──────────
-app.use('/api', (req, res, next) => {
+app.use((req, res, next) => {
+  // Skip auth for login and static root
+  if (req.path === '/login' || req.path === '/') return next();
   const userId = req.headers['x-user-id'];
   if (!userId || !sessions.has(userId)) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -747,20 +690,20 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-// ─── API endpoints ──────────────────────────────────────────────────
+// ─── API endpoints (EXACTLY THE SAME AS ORIGINAL, but with req.userId) ──
 
-// GET /api/status
-app.get('/api/status', (req, res) => {
+// GET /status
+app.get('/status', (req, res) => {
   const userId = req.userId;
   const userData = getUserData(userId);
-  const termsWithStatus = userData.terms.map(t => ({
+  const termStatus = userData.terms.map(t => ({
     ...t,
     active: Array.from(activeJobs.values()).some(j => j.userId === userId && j.term === t.term),
     listingCount: loadUserHistory(userId, t.term).length,
     bargainCount: (userData.bargains[t.term] || []).length
   }));
   res.json({
-    terms: termsWithStatus,
+    terms: termStatus,
     clients: clients.size,
     active: Array.from(activeJobs.values()).filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
     queue: jobQueue.filter(j => j.userId === userId).map(j => ({ term: j.term, type: j.type })),
@@ -768,8 +711,8 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-// POST /api/terms
-app.post('/api/terms', (req, res) => {
+// POST /terms
+app.post('/terms', (req, res) => {
   const userId = req.userId;
   const { term, thresholdPercent = 20, interval = 5 } = req.body;
   if (!term) return res.status(400).json({ error: 'Missing term' });
@@ -790,8 +733,8 @@ app.post('/api/terms', (req, res) => {
   res.json({ success: true, term: obj });
 });
 
-// DELETE /api/terms/:term
-app.delete('/api/terms/:term', (req, res) => {
+// DELETE /terms/:term
+app.delete('/terms/:term', (req, res) => {
   const userId = req.userId;
   const term = req.params.term;
   const userData = getUserData(userId);
@@ -804,8 +747,8 @@ app.delete('/api/terms/:term', (req, res) => {
   res.json({ success: true });
 });
 
-// POST /api/calculate-average
-app.post('/api/calculate-average', (req, res) => {
+// POST /calculate-average
+app.post('/calculate-average', (req, res) => {
   const userId = req.userId;
   const { term } = req.body;
   if (!term) return res.status(400).json({ error: 'Missing term' });
@@ -819,8 +762,8 @@ app.post('/api/calculate-average', (req, res) => {
   res.json({ success: true });
 });
 
-// POST /api/start-scan
-app.post('/api/start-scan', (req, res) => {
+// POST /start-scan
+app.post('/start-scan', (req, res) => {
   const userId = req.userId;
   const { term } = req.body;
   if (!term) return res.status(400).json({ error: 'Missing term' });
@@ -842,8 +785,8 @@ app.post('/api/start-scan', (req, res) => {
   res.json({ success: true });
 });
 
-// POST /api/stop-scan
-app.post('/api/stop-scan', (req, res) => {
+// POST /stop-scan
+app.post('/stop-scan', (req, res) => {
   const userId = req.userId;
   const { term } = req.body;
   if (!term) return res.status(400).json({ error: 'Missing term' });
@@ -852,14 +795,13 @@ app.post('/api/stop-scan', (req, res) => {
   if (!termObj) return res.status(404).json({ error: 'Term not found' });
   termObj.scanning = false;
   saveUserTerms(userId, userData.terms);
-  // remove queued jobs
   jobQueue = jobQueue.filter(j => !(j.userId === userId && j.term === term && j.type === 'scan_new'));
   broadcastUpdate(userId);
   res.json({ success: true });
 });
 
-// GET /api/searches
-app.get('/api/searches', (req, res) => {
+// GET /searches
+app.get('/searches', (req, res) => {
   const userId = req.userId;
   const { term, type } = req.query;
   if (!term) return res.status(400).json({ error: 'Missing term' });
@@ -871,42 +813,6 @@ app.get('/api/searches', (req, res) => {
     listings = loadUserHistory(userId, term);
   }
   res.json({ term, type: type || 'all', count: listings.length, listings: listings.slice(0, 100) });
-});
-
-// ─── Master export/import ──────────────────────────────────────────
-app.get('/api/master/export', (req, res) => {
-  if (req.userId !== MASTER_ID) return res.status(403).json({ error: 'Forbidden' });
-  const allData = {};
-  const userDirs = fs.readdirSync(DATA_DIR).filter(f => fs.statSync(path.join(DATA_DIR, f)).isDirectory());
-  for (const uid of userDirs) {
-    const terms = loadUserTerms(uid);
-    const history = {};
-    for (const t of terms) {
-      history[t.term] = loadUserHistory(uid, t.term);
-    }
-    allData[uid] = { terms, history };
-  }
-  res.json(allData);
-});
-
-app.post('/api/master/import', (req, res) => {
-  if (req.userId !== MASTER_ID) return res.status(403).json({ error: 'Forbidden' });
-  const data = req.body;
-  if (!data || typeof data !== 'object') return res.status(400).json({ error: 'Invalid data' });
-  let imported = 0;
-  for (const [uid, userData] of Object.entries(data)) {
-    if (!userData.terms) continue;
-    ensureUserDir(uid);
-    saveUserTerms(uid, userData.terms);
-    if (userData.history) {
-      for (const [term, listings] of Object.entries(userData.history)) {
-        saveUserHistory(uid, term, listings);
-      }
-    }
-    imported++;
-    userCache.delete(uid);
-  }
-  res.json({ success: true, imported });
 });
 
 // ─── WebSocket server ──────────────────────────────────────────────────
@@ -1111,12 +1017,11 @@ setInterval(() => {
 // ─── Start server ──────────────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\n' + '='.repeat(60));
-  console.log('Vinted Price Monitor Server (with Auth)');
+  console.log('Vinted Price Monitor Server');
   console.log('='.repeat(60));
   console.log('HTTP: http://localhost:' + PORT);
   console.log('WebSocket: ws://localhost:' + PORT);
   console.log('Data directory: ' + DATA_DIR);
   console.log('Persistent storage: ' + (process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'));
-  console.log('Master ID: ' + MASTER_ID);
   console.log('='.repeat(60) + '\n');
 });
