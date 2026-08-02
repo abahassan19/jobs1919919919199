@@ -23,9 +23,6 @@ console.log(`Persistent storage: ${process.env.RENDER_PERSISTENT_DISK ? 'enabled
 
 // ─── VAPID keys — PERSISTED so push keeps working across restarts ────
 // Priority: env vars → saved file → generate & save to disk.
-// If you don't set env vars, the keys are saved to userdata/vapid-keys.json
-// so subscriptions survive restarts (on ephemeral disks they still won't
-// survive a redeploy — set the env vars for that).
 const VAPID_FILE = path.join(DATA_DIR, 'vapid-keys.json');
 let VAPID_PUBLIC_KEY;
 let VAPID_PRIVATE_KEY;
@@ -71,7 +68,7 @@ const ICON_URL = 'https://cdn-icons-png.flaticon.com/512/2331/2331966.png';
 // ─── Constants ──────────────────────────────────────────────────────────
 const MAX_TERMS = 30;
 const MEMBERSHIP_SYNC_INTERVAL = 60000; // 1 minute
-const SCAN_INTERVAL_MINUTES = 3;        // fixed scan frequency (was user-selectable)
+const SCAN_INTERVAL_MINUTES = 3;        // fixed scan frequency
 
 // ─── In-memory state ──────────────────────────────────────────────────
 const sessions = new Map();           // userId -> { lastActive, membership }
@@ -190,9 +187,8 @@ function getUserData(userId) {
   return userCache.get(userId);
 }
 
-// ─── Price analysis (max price based — no average guessing) ────────────
+// ─── Price analysis (max price based) ────────────────────────────────
 // A bargain is any listing priced at or below the user's maxPrice.
-// "discount" is how far below the limit the item is (percentage).
 function analyzePrices(listings, maxPrice) {
   if (!listings || listings.length === 0) return { bargains: [], stats: null };
   const max = parseFloat(maxPrice);
@@ -264,9 +260,6 @@ function processScrapedListings(userId, term, scraped) {
 // ─── Push notification sender ──────────────────────────────────────────
 function handlePushError(userId, sub, err) {
   const code = err.statusCode;
-  // 404/410 = subscription expired, 401/403 = VAPID keys changed/invalid.
-  // In all cases the stored subscription is useless — drop it so the
-  // client is told to re-enable (status shows pushEnabled = false).
   if (code === 404 || code === 410 || code === 401 || code === 403) {
     console.log(`Removing stale push subscription for ${userId} (status ${code})`);
     let subs = loadPushSubscriptions(userId);
@@ -287,7 +280,6 @@ function sendPushNotifications(userId, term, bargainsList) {
 
   console.log(`Sending ${bargainsList.length} push notification(s) for "${term}" to user ${userId} (${subs.length} device(s))`);
 
-  // One notification per bargain so the user gets a popup for every deal.
   for (const item of bargainsList) {
     const name = (item.name || 'New bargain').substring(0, 60);
     const title = `${item.price} - ${name}`;
@@ -459,6 +451,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ─── Static files (your separate homepage lives in /public) ──────────
+// Anything you drop in public/ (index.html, css, images) is served
+// without authentication. index:false lets us control the / route below.
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+
 // ─── Serve Service Worker ──────────────────────────────────────────────
 const SW_SCRIPT = `
 self.addEventListener('push', function (event) {
@@ -498,22 +495,60 @@ app.get('/sw.js', (req, res) => {
   res.send(SW_SCRIPT);
 });
 
-// ─── Responsive Frontend HTML ──────────────────────────────────────────
-const HTML = `<!DOCTYPE html>
+// ─── Homepage (/) ──────────────────────────────────────────────────────
+// Serves public/index.html. If you haven't created it yet, a minimal
+// dark placeholder with a Login button is shown instead.
+app.get('/', (req, res) => {
+  const homeFile = path.join(__dirname, 'public', 'index.html');
+  if (fs.existsSync(homeFile)) {
+    res.sendFile(homeFile);
+  } else {
+    res.type('html').send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vinted Monitor</title>
+<style>
+body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#0b0e14;color:#e5e7eb;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.wrap{text-align:center;padding:24px}
+h1{font-size:34px;margin:0 0 10px}
+p{color:#9aa3b2;margin:0 0 28px;font-size:16px}
+a{display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;padding:12px 30px;border-radius:6px;font-weight:600}
+a:hover{background:#2563eb}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Vinted Monitor</h1>
+  <p>Track Vinted listings and get a notification when a new item appears below your price.</p>
+  <a href="/login">Login</a>
+</div>
+</body>
+</html>`);
+  }
+});
+
+// ─── App / Login page ──────────────────────────────────────────────────
+const APP_HTML = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-<title>Vinted Price Monitor</title>
+<title>Vinted Monitor - Login</title>
 <style>
-/* ── Reset & base ───────────────────────────────────────────── */
+/* ── Dark theme ────────────────────────────────────────────── */
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --blue:#2563eb;--blue-dark:#1d4ed8;
-  --red:#dc2626;--red-dark:#b91c1c;
-  --green:#16a34a;--green-dark:#15803d;
-  --ink:#111827;--muted:#6b7280;--gray:#9ca3af;
-  --border:#e5e7eb;--bg:#f7f7f7;--card:#ffffff;
+  --bg:#0b0e14;          /* page background */
+  --card:#151a23;        /* card background */
+  --card2:#1b2230;       /* secondary surfaces */
+  --border:#262e3d;      /* borders */
+  --ink:#e5e7eb;         /* main text */
+  --muted:#9aa3b2;       /* muted text */
+  --blue:#3b82f6; --blue-dark:#2563eb;
+  --red:#ef4444; --red-dark:#dc2626;
+  --green:#22c55e; --green-dark:#16a34a;
 }
 body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink);padding:12px;min-height:100vh}
 
@@ -525,22 +560,22 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .login-container{max-width:400px;margin:60px auto;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px}
 .login-container h2{margin-top:0;font-weight:600;font-size:24px}
 .login-container p{color:var(--muted);font-size:14px;margin:6px 0}
-.login-container input{width:100%;padding:12px;margin:10px 0;border:1px solid var(--border);border-radius:6px;font-size:16px}
+.login-container input{width:100%;padding:12px;margin:10px 0;border:1px solid var(--border);border-radius:6px;font-size:16px;background:var(--card2);color:var(--ink)}
 .login-container button{width:100%;padding:12px;background:var(--blue);color:#fff;border:none;border-radius:6px;font-size:16px;font-weight:600;cursor:pointer}
 .login-container button:hover{background:var(--blue-dark)}
 .login-container .error{color:var(--red);font-size:14px;margin-top:5px}
 
 /* ── Header ────────────────────────────────────────────────── */
 .header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px}
-.header h1{font-size:22px;font-weight:700;letter-spacing:-0.3px;color:#000}
+.header h1{font-size:22px;font-weight:700;letter-spacing:-0.3px;color:#fff}
 .header .user{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.header .user span{font-size:14px;background:var(--bg);border:1px solid var(--border);padding:4px 12px;border-radius:6px}
+.header .user span{font-size:14px;background:var(--card2);border:1px solid var(--border);padding:4px 12px;border-radius:6px}
 .logout-btn{background:var(--red);color:#fff;padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-weight:500;font-size:14px}
 .logout-btn:hover{background:var(--red-dark)}
 
 /* ── Cards ──────────────────────────────────────────────────── */
 .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px}
-.card h3{font-size:16px;font-weight:600;margin-bottom:12px;color:#000}
+.card h3{font-size:16px;font-weight:600;margin-bottom:12px;color:#fff}
 
 /* ── Push card ─────────────────────────────────────────────── */
 .push-card{background:var(--card);border:1px solid var(--blue);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px;margin-bottom:16px}
@@ -548,16 +583,16 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .push-card .status{display:flex;align-items:center;gap:8px;font-size:14px}
 .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
 .dot-on{background:var(--green)}
-.dot-off{background:var(--gray)}
+.dot-off{background:#4b5563}
 .dot-warn{background:var(--red)}
-.push-card .instructions{font-size:14px;background:var(--bg);padding:12px 14px;border-radius:6px;border-left:4px solid var(--blue);display:none}
+.push-card .instructions{font-size:14px;background:var(--card2);padding:12px 14px;border-radius:6px;border-left:4px solid var(--blue);display:none}
 .push-card .instructions.show{display:block}
-.push-card .instructions strong{color:#000}
+.push-card .instructions strong{color:#fff}
 
 button{background:var(--blue);color:#fff;border:none;border-radius:6px;padding:10px 18px;font-size:14px;font-weight:500;cursor:pointer;touch-action:manipulation}
 button:hover{background:var(--blue-dark)}
-button.secondary{background:var(--muted)}
-button.secondary:hover{background:#4b5563}
+button.secondary{background:#4b5563}
+button.secondary:hover{background:#374151}
 button.danger{background:var(--red)}
 button.danger:hover{background:var(--red-dark)}
 button.success{background:var(--green)}
@@ -567,11 +602,11 @@ button:disabled{opacity:0.6;cursor:not-allowed}
 /* ── Add term form ──────────────────────────────────────────── */
 .add-form{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
 .add-form .field{flex:1 1 220px;min-width:180px}
-.add-form .field label{display:block;font-size:13px;font-weight:600;margin-bottom:3px;color:#000}
-.add-form .field input,.add-form .field select{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--card)}
-.add-form .field .price-input{display:flex;align-items:center;border:1px solid var(--border);border-radius:6px;background:var(--card);overflow:hidden}
-.add-form .field .price-input .currency{background:var(--bg);padding:10px 12px;font-size:14px;color:var(--muted);border-right:1px solid var(--border)}
-.add-form .field .price-input input{width:100%;border:none;outline:none;padding:10px 12px;font-size:14px}
+.add-form .field label{display:block;font-size:13px;font-weight:600;margin-bottom:3px;color:#fff}
+.add-form .field input{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--card2);color:var(--ink)}
+.add-form .field .price-input{display:flex;align-items:center;border:1px solid var(--border);border-radius:6px;background:var(--card2);overflow:hidden}
+.add-form .field .price-input .currency{background:var(--card);padding:10px 12px;font-size:14px;color:var(--muted);border-right:1px solid var(--border)}
+.add-form .field .price-input input{width:100%;border:none;outline:none;padding:10px 12px;font-size:14px;background:transparent;color:var(--ink)}
 .add-form .field .help{font-size:11px;color:var(--muted);margin-top:3px}
 .add-form button{align-self:center;padding:10px 20px}
 .term-limit-warning{color:var(--red);font-size:14px;margin-top:6px;display:none}
@@ -586,19 +621,19 @@ button:disabled{opacity:0.6;cursor:not-allowed}
 /* ── Terms – Desktop table ─────────────────────────────────── */
 .table-wrap{overflow-x:auto;margin-top:4px}
 .terms-table{width:100%;border-collapse:collapse;font-size:14px}
-.terms-table th{text-align:left;padding:10px 8px;background:var(--bg);font-weight:600;color:#000;border-bottom:2px solid var(--border)}
+.terms-table th{text-align:left;padding:10px 8px;background:var(--card2);font-weight:600;color:#fff;border-bottom:2px solid var(--border)}
 .terms-table td{padding:10px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
 .terms-table .actions{display:flex;flex-wrap:wrap;gap:6px}
 .badge{display:inline-block;padding:2px 10px;border-radius:4px;font-size:12px;font-weight:600}
 .badge-active{background:var(--green);color:#fff}
-.badge-idle{background:var(--gray);color:#fff}
+.badge-idle{background:#4b5563;color:#fff}
 .badge-bargain{background:var(--red);color:#fff}
 .badge-push-on{background:var(--green);color:#fff}
-.badge-push-off{background:var(--gray);color:#fff}
+.badge-push-off{background:#4b5563;color:#fff}
 .badge-push-warn{background:var(--red);color:#fff}
 
 /* ── Terms – Mobile card layout ────────────────────────────── */
-.term-card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:10px;border-left:4px solid var(--blue);display:none}
+.term-card{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:10px;border-left:4px solid var(--blue);display:none}
 .term-card .row{display:flex;justify-content:space-between;flex-wrap:wrap;margin:2px 0;font-size:14px}
 .term-card .label{color:var(--muted);font-weight:500;min-width:80px}
 .term-card .value{font-weight:500}
@@ -612,16 +647,16 @@ button:disabled{opacity:0.6;cursor:not-allowed}
 
 /* ── Workers ────────────────────────────────────────────────── */
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin:8px 0}
-.stat-box{background:var(--bg);border:1px solid var(--border);padding:12px;border-radius:6px;text-align:center}
-.stat-box .value{font-size:20px;font-weight:600;color:#000}
+.stat-box{background:var(--card2);border:1px solid var(--border);padding:12px;border-radius:6px;text-align:center}
+.stat-box .value{font-size:20px;font-weight:600;color:#fff}
 .stat-box .label{font-size:12px;color:var(--muted)}
 .workers-table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
-.workers-table th{text-align:left;padding:8px;background:var(--bg);border-bottom:2px solid var(--border)}
+.workers-table th{text-align:left;padding:8px;background:var(--card2);border-bottom:2px solid var(--border)}
 .workers-table td{padding:8px;border-bottom:1px solid var(--border)}
 
 /* ── Log ────────────────────────────────────────────────────── */
-.log{background:#111827;color:#f9fafb;padding:12px;border-radius:6px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:13px;line-height:1.5}
-.log .timestamp{color:#9ca3af}
+.log{background:#05070b;color:#cbd5e1;padding:12px;border-radius:6px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:13px;line-height:1.5}
+.log .timestamp{color:#6b7280}
 .log .info{color:#60a5fa}
 .log .success{color:#4ade80}
 .log .warning{color:#d1d5db}
@@ -630,10 +665,10 @@ button:disabled{opacity:0.6;cursor:not-allowed}
 .empty{color:var(--muted);text-align:center;padding:20px;font-size:15px}
 
 /* ── Password popup ─────────────────────────────────────────── */
-.password-popup-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999}
-.password-popup{background:var(--card);border-radius:8px;padding:30px 24px;max-width:420px;width:90%;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,0.3)}
+.password-popup-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999}
+.password-popup{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:30px 24px;max-width:420px;width:90%;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,0.5)}
 .password-popup h2{color:var(--red);margin-top:0;font-size:24px}
-.password-popup .password{background:var(--bg);padding:14px;border-radius:6px;font-size:28px;font-weight:700;font-family:monospace;letter-spacing:2px;color:#000;margin:16px 0;border:2px dashed var(--blue)}
+.password-popup .password{background:var(--card2);padding:14px;border-radius:6px;font-size:28px;font-weight:700;font-family:monospace;letter-spacing:2px;color:#fff;margin:16px 0;border:2px dashed var(--blue)}
 .password-popup p{color:var(--muted);line-height:1.5;margin-bottom:12px}
 .password-popup .warning{color:var(--red);font-weight:600;font-size:14px}
 .password-popup button{padding:12px 32px;background:var(--blue);color:#fff;border:none;border-radius:6px;font-size:16px;font-weight:600;cursor:pointer}
@@ -736,7 +771,7 @@ button:disabled{opacity:0.6;cursor:not-allowed}
 <!-- Tabs -->
 <div class="tabs">
   <button class="tab active" data-tab="terms">Terms</button>
-  <button class="tab" data-tab="bargains">Bargains <span id="bargainCount" class="badge" style="background:#dc2626;color:#fff;padding:0 8px;margin-left:4px;">0</span></button>
+  <button class="tab" data-tab="bargains">Bargains <span id="bargainCount" class="badge" style="background:#ef4444;color:#fff;padding:0 8px;margin-left:4px;">0</span></button>
   <button class="tab" data-tab="workers">Workers</button>
   <button class="tab" data-tab="log">Log</button>
 </div>
@@ -886,8 +921,6 @@ function initWebSocket() {
 
 // ─── PUSH NOTIFICATIONS (cross-browser) ─────────────────────────────────
 
-// The subscribe() API requires a Uint8Array key — a raw base64 string
-// makes subscribe() throw in Chrome/Firefox/Safari. This converts it.
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
@@ -897,7 +930,6 @@ function urlBase64ToUint8Array(base64String) {
   return outputArray;
 }
 
-// iOS only allows Web Push from an installed PWA (Add to Home Screen).
 function isStandalonePWA() {
   return window.matchMedia('(display-mode: standalone)').matches || (navigator.standalone === true);
 }
@@ -963,7 +995,6 @@ async function initPushNotifications() {
         enablePushBtn.textContent = 'Enabled';
         enablePushBtn.disabled = true;
         testPushBtn.style.display = 'inline-block';
-        // Re-sync with the server (covers server restarts / DB loss)
         await sendSubscriptionToServer(sub);
         return;
       }
@@ -994,8 +1025,7 @@ async function onEnablePush() {
   if (!userId) return;
   if (!isPushSupported()) return;
 
-  // 1) Ask permission FIRST — must stay inside the click gesture or
-  //    Safari/Chrome may silently refuse to show the prompt.
+  // 1) Ask permission FIRST — must stay inside the click gesture
   let perm = Notification.permission;
   if (perm === 'default') {
     try {
@@ -1044,7 +1074,7 @@ async function onEnablePush() {
       pushInstructions.classList.remove('show');
       addLog('Push notifications enabled', 'success');
 
-      // Immediately send a test popup so the user sees it works right away
+      // Immediately send a test popup so the user sees it works
       try {
         const t = await authFetch(API_BASE + '/test-push', { method: 'POST' });
         const td = await t.json();
@@ -1101,14 +1131,12 @@ function renderAll(data) {
     termLimitWarning.style.display = 'none';
   }
 
-  // Keep push status in sync with the server
   if (data.pushEnabled) {
     setPushStatus('Notifications enabled', 'on');
     enablePushBtn.textContent = 'Enabled';
     enablePushBtn.disabled = true;
     testPushBtn.style.display = 'inline-block';
   } else if (pushSubscription) {
-    // We have a local subscription but the server lost it (expired/restart)
     setPushStatus('Re-enable notifications', 'warn');
     enablePushBtn.style.display = 'inline-block';
     enablePushBtn.disabled = false;
@@ -1359,12 +1387,12 @@ setTimeout(() => {
 </body>
 </html>`;
 
-app.get('/', (req, res) => res.send(HTML));
+app.get('/login', (req, res) => res.send(APP_HTML));
 
 // ─── Referral route ──────────────────────────────────────────────────
 app.get('/referral', (req, res) => {
   const referralCode = req.query.referral || '3498374473';
-  res.redirect('/?referral=' + encodeURIComponent(referralCode));
+  res.redirect('/login?referral=' + encodeURIComponent(referralCode));
 });
 
 // ─── Login endpoint ──────────────────────────────────────────────────
@@ -1392,6 +1420,9 @@ app.post('/login', async (req, res) => {
 });
 
 // ─── Middleware: require user ID header ──────────────────────────────
+// Public paths (/, /login, /referral, /sw.js) skip auth. Static files in
+// /public are served by express.static BEFORE this middleware, so they
+// are also public.
 app.use((req, res, next) => {
   if (req.path === '/login' || req.path === '/' || req.path === '/referral' || req.path === '/sw.js') return next();
   const userId = req.headers['x-user-id'];
@@ -1787,6 +1818,8 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('Vinted Price Monitor Server (with Push & Responsive UI)');
   console.log('='.repeat(60));
   console.log('HTTP: http://localhost:' + PORT);
+  console.log('Homepage: /  (serves public/index.html)');
+  console.log('Login: /login');
   console.log('WebSocket: ws://localhost:' + PORT);
   console.log('Data directory: ' + DATA_DIR);
   console.log('Persistent storage: ' + (process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'));
