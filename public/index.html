@@ -1,0 +1,1570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Your Site Name — Reliable Service</title>
+
+  <!-- EDIT: page description for SEO -->
+  <meta name="description" content="One-line description of your service.">
+
+  <!-- EDIT: theme color for mobile browser chrome -->
+  <meta name="theme-color" content="#0b0e14">
+
+  <link rel="preconnect" href="https://fonts.bunny.net" crossorigin>
+  <link rel="stylesheet" href="https://fonts.bunny.net/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap">
+
+  <style>
+    /* ============================================================
+       TOKENS
+       ============================================================ */
+    :root {
+      --bg: #0b0e14;
+      --bg-elevated: #10141d;
+      --bg-deep: #07090e;
+      --panel: rgba(255, 255, 255, 0.035);
+      --panel-strong: rgba(255, 255, 255, 0.06);
+      --border: rgba(255, 255, 255, 0.09);
+      --border-strong: rgba(255, 255, 255, 0.18);
+
+      --accent: #3d7bff;
+      --accent-hover: #5a90ff;
+      --accent-soft: rgba(61, 123, 255, 0.12);
+      --accent-line: rgba(61, 123, 255, 0.35);
+      --red: #ff4d5e;
+      --green: #2ecc71;
+
+      --text: #e6eaf2;
+      --text-muted: #8b94a7;
+      --text-faint: #5c6577;
+
+      --radius: 14px;
+      --radius-lg: 22px;
+      --font: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+      --header-h: 72px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; scroll-padding-top: calc(var(--header-h) + 16px); }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    img, svg { display: block; max-width: 100%; }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hover); }
+
+    button { font-family: var(--font); }
+
+    /* faint ambient glow — kept flat/dark */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background:
+        radial-gradient(700px 460px at 12% -6%, rgba(61, 123, 255, 0.10), transparent 60%),
+        radial-gradient(800px 520px at 92% 12%, rgba(61, 123, 255, 0.06), transparent 60%),
+        radial-gradient(900px 600px at 50% 110%, rgba(61, 123, 255, 0.05), transparent 60%);
+      pointer-events: none;
+    }
+
+    .container {
+      width: min(1120px, 92vw);
+      margin: 0 auto;
+    }
+
+    /* ============================================================
+       BUTTONS
+       ============================================================ */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 11px 22px;
+      border-radius: 10px;
+      font-size: 14.5px;
+      font-weight: 600;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background .15s ease, border-color .15s ease, color .15s ease, transform .1s ease;
+      white-space: nowrap;
+      text-align: center;
+    }
+    .btn:active { transform: translateY(1px); }
+
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); color: #fff; }
+
+    .btn-ghost {
+      background: var(--panel);
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+    .btn-ghost:hover {
+      background: var(--panel-strong);
+      border-color: rgba(255, 255, 255, 0.30);
+      color: var(--text);
+    }
+
+    .btn-lg { padding: 14px 28px; font-size: 15.5px; border-radius: 12px; }
+
+    .btn-block { width: 100%; }
+
+    /* ============================================================
+       HEADER
+       ============================================================ */
+    header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      height: var(--header-h);
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid transparent;
+      transition: background .25s ease, border-color .25s ease;
+    }
+    header.scrolled {
+      background: rgba(11, 14, 20, 0.80);
+      -webkit-backdrop-filter: blur(16px);
+      backdrop-filter: blur(16px);
+      border-bottom-color: var(--border);
+    }
+    header .container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text);
+      font-weight: 800;
+      font-size: 17px;
+      letter-spacing: -0.01em;
+      flex-shrink: 0;
+    }
+    .brand svg { flex-shrink: 0; }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 26px;
+      list-style: none;
+    }
+    .nav a {
+      color: var(--text-muted);
+      font-size: 14.5px;
+      font-weight: 500;
+      transition: color .15s ease;
+    }
+    .nav a:hover { color: var(--text); }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+
+    /* hamburger (mobile only) */
+    .burger {
+      display: none;
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      background: var(--panel);
+      border: 1px solid var(--border-strong);
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .burger span {
+      width: 18px;
+      height: 2px;
+      background: var(--text);
+      border-radius: 2px;
+      transition: transform .25s ease, opacity .25s ease;
+    }
+    .burger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+    .burger.open span:nth-child(2) { opacity: 0; }
+    .burger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+    /* ============================================================
+       HERO
+       ============================================================ */
+    .hero {
+      padding: calc(var(--header-h) + 80px) 0 90px;
+      position: relative;
+    }
+    .hero .container {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      gap: 60px;
+      align-items: center;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      border: 1px solid var(--accent-line);
+      color: var(--accent-hover);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      margin-bottom: 24px;
+    }
+    .badge::before {
+      content: "";
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 10px var(--green);
+      flex-shrink: 0;
+    }
+
+    .hero h1 {
+      font-size: clamp(34px, 5vw, 56px);
+      font-weight: 900;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      margin-bottom: 20px;
+      text-wrap: balance;
+    }
+    .hero h1 .accent { color: var(--accent); }
+
+    .hero p.lead {
+      color: var(--text-muted);
+      font-size: 17px;
+      max-width: 54ch;
+      margin-bottom: 34px;
+    }
+
+    .hero-cta { display: flex; gap: 14px; flex-wrap: wrap; }
+
+    .hero-note {
+      margin-top: 22px;
+      font-size: 13px;
+      color: var(--text-faint);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .hero-note .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+    /* mock card in hero — EDIT / replace with a real screenshot */
+    .mock {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      -webkit-backdrop-filter: blur(18px);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+      display: grid;
+      gap: 12px;
+    }
+    .mock__head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+      gap: 10px;
+    }
+    .mock__title { font-size: 14px; font-weight: 600; color: var(--text-muted); }
+    .mock__status {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--green);
+      background: rgba(46, 204, 113, 0.10);
+      border: 1px solid rgba(46, 204, 113, 0.30);
+      padding: 3px 10px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .mock__row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 12px 14px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .mock__row .label { font-size: 14px; font-weight: 500; }
+    .mock__row .sub { font-size: 12px; color: var(--text-faint); margin-top: 2px; }
+    .mock__row .price { font-size: 15px; font-weight: 700; white-space: nowrap; }
+    .mock__row .price.deal { color: var(--red); }
+    .mock__foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 10px;
+      font-size: 12px;
+      color: var(--text-faint);
+      gap: 10px;
+    }
+
+    /* ============================================================
+       TRUST STRIP
+       ============================================================ */
+    .strip {
+      padding: 40px 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.015);
+    }
+    .strip .container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 26px;
+      flex-wrap: wrap;
+    }
+    .strip__label {
+      font-size: 12.5px;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.10em;
+      font-weight: 600;
+    }
+    .strip__items { display: flex; gap: 36px; flex-wrap: wrap; }
+    .strip__item { color: var(--text-muted); font-weight: 700; font-size: 15px; opacity: .75; letter-spacing: 0.02em; }
+
+    /* ============================================================
+       SECTIONS (shared)
+       ============================================================ */
+    section { padding: 90px 0; }
+
+    .section-head { max-width: 660px; margin-bottom: 52px; }
+    .section-head h2 {
+      font-size: clamp(26px, 3.4vw, 38px);
+      font-weight: 800;
+      letter-spacing: -0.015em;
+      line-height: 1.2;
+      margin-bottom: 14px;
+      text-wrap: balance;
+    }
+    .section-head h2 .accent { color: var(--accent); }
+    .section-head p { color: var(--text-muted); font-size: 16px; }
+    .section-head.center { margin-left: auto; margin-right: auto; text-align: center; }
+
+    .section-alt { background: rgba(255, 255, 255, 0.015); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+
+    /* ============================================================
+       FEATURES
+       ============================================================ */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px 24px;
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+      transition: border-color .2s ease, transform .2s ease, background .2s ease;
+    }
+    .card:hover {
+      border-color: var(--accent-line);
+      background: var(--panel-strong);
+      transform: translateY(-3px);
+    }
+    .card .icon {
+      width: 46px; height: 46px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      background: var(--accent-soft);
+      border: 1px solid var(--accent-line);
+      margin-bottom: 18px;
+    }
+    .card .icon svg { stroke: var(--accent); }
+    .card h3 { font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+    .card p { color: var(--text-muted); font-size: 14.5px; }
+
+    /* ============================================================
+       HOW IT WORKS
+       ============================================================ */
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+    .step {
+      position: relative;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px 24px;
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+    }
+    .step__num {
+      width: 40px; height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      font-size: 15px;
+      margin-bottom: 16px;
+    }
+    .step h3 { font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+    .step p { color: var(--text-muted); font-size: 14.5px; }
+
+    /* ============================================================
+       STATS
+       ============================================================ */
+    .stats {
+      padding: 50px 30px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 28px;
+      text-align: center;
+    }
+    .stat .num {
+      font-size: clamp(30px, 3.6vw, 42px);
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+    .stat .num.accent { color: var(--accent); }
+    .stat .cap { font-size: 13.5px; color: var(--text-muted); margin-top: 8px; }
+
+    /* ============================================================
+       PRICING
+       ============================================================ */
+    .pricing {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      align-items: stretch;
+    }
+    .price-card {
+      position: relative;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 32px 26px;
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      transition: border-color .2s ease, transform .2s ease;
+    }
+    .price-card:hover { transform: translateY(-3px); }
+    .price-card.featured {
+      border-color: var(--accent-line);
+      background: var(--accent-soft);
+    }
+    .price-card.featured::before {
+      content: "MOST POPULAR";   /* EDIT */
+      position: absolute;
+      top: -13px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--accent);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      padding: 5px 14px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .price-card__name { font-size: 15px; font-weight: 700; color: var(--text-muted); }
+    .price-card__amount {
+      font-size: clamp(34px, 3.4vw, 44px);
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+    .price-card__amount .per { font-size: 14px; font-weight: 500; color: var(--text-faint); letter-spacing: 0; }
+    .price-card__desc { font-size: 14px; color: var(--text-muted); }
+    .price-card ul {
+      list-style: none;
+      display: grid;
+      gap: 10px;
+      margin-top: auto;
+    }
+    .price-card li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 14px;
+      color: var(--text);
+    }
+    .price-card li::before {
+      content: "";
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      margin-top: 8px;
+      flex-shrink: 0;
+    }
+    .price-card .btn { margin-top: 8px; }
+
+    /* ============================================================
+       TESTIMONIALS
+       ============================================================ */
+    .quotes {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+    .quote {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 26px 24px;
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .quote p { color: var(--text); font-size: 14.5px; font-style: italic; flex: 1; }
+    .quote__who { display: flex; align-items: center; gap: 12px; }
+    .quote__avatar {
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      background: var(--accent-soft);
+      border: 1px solid var(--accent-line);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      color: var(--accent-hover);
+      flex-shrink: 0;
+    }
+    .quote__name { font-size: 14px; font-weight: 600; }
+    .quote__role { font-size: 12.5px; color: var(--text-faint); }
+    .stars { color: var(--accent); font-size: 13px; letter-spacing: 2px; }
+
+    /* ============================================================
+       FAQ (accordion)
+       ============================================================ */
+    .faq {
+      max-width: 760px;
+      margin: 0 auto;
+      display: grid;
+      gap: 12px;
+    }
+    .faq-item {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+      overflow: hidden;
+      transition: border-color .2s ease;
+    }
+    .faq-item.open { border-color: var(--accent-line); }
+    .faq-q {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      background: none;
+      border: none;
+      padding: 18px 20px;
+      color: var(--text);
+      font-size: 15.5px;
+      font-weight: 600;
+      text-align: left;
+      cursor: pointer;
+    }
+    .faq-q .chev {
+      width: 22px; height: 22px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: var(--accent-soft);
+      color: var(--accent-hover);
+      font-size: 14px;
+      font-weight: 700;
+      transition: transform .25s ease;
+    }
+    .faq-item.open .chev { transform: rotate(45deg); }
+    .faq-a {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height .3s ease;
+    }
+    .faq-a-inner {
+      padding: 0 20px 18px;
+      color: var(--text-muted);
+      font-size: 14.5px;
+    }
+
+    /* ============================================================
+       CONTACT
+       ============================================================ */
+    .contact-grid {
+      display: grid;
+      grid-template-columns: 0.9fr 1.1fr;
+      gap: 20px;
+      align-items: stretch;
+    }
+    .contact-info {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 30px 26px;
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+    .contact-info h3 { font-size: 19px; font-weight: 700; }
+    .contact-info > p { color: var(--text-muted); font-size: 14.5px; }
+    .contact-line { display: flex; align-items: center; gap: 12px; }
+    .contact-line .icon {
+      width: 40px; height: 40px;
+      flex-shrink: 0;
+      border-radius: 10px;
+      background: var(--accent-soft);
+      border: 1px solid var(--accent-line);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .contact-line .icon svg { stroke: var(--accent); }
+    .contact-line .k { font-size: 12px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
+    .contact-line .v { font-size: 14.5px; font-weight: 500; color: var(--text); margin-top: 2px; word-break: break-word; }
+
+    .contact-form {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 30px 26px;
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+    }
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .field { display: grid; gap: 6px; margin-bottom: 14px; }
+    .field label { font-size: 13px; font-weight: 600; color: var(--text-muted); }
+    .field input,
+    .field textarea,
+    .field select {
+      width: 100%;
+      font-family: var(--font);
+      font-size: 14.5px;
+      color: var(--text);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      padding: 11px 14px;
+      outline: none;
+      transition: border-color .15s ease, box-shadow .15s ease;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    .field input:focus,
+    .field textarea:focus,
+    .field select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(61, 123, 255, 0.18);
+    }
+    .field textarea { min-height: 110px; resize: vertical; }
+    .form-note { font-size: 12.5px; color: var(--text-faint); }
+    .form-ok {
+      display: none;
+      margin-top: 12px;
+      padding: 11px 14px;
+      border-radius: 10px;
+      background: rgba(46, 204, 113, 0.10);
+      border: 1px solid rgba(46, 204, 113, 0.35);
+      color: var(--green);
+      font-size: 13.5px;
+      font-weight: 600;
+    }
+
+    /* ============================================================
+       CTA PANE
+       ============================================================ */
+    .cta-pane {
+      position: relative;
+      text-align: center;
+      background: var(--panel);
+      border: 1px solid var(--accent-line);
+      border-radius: var(--radius-lg);
+      padding: 72px 30px;
+      -webkit-backdrop-filter: blur(18px);
+      backdrop-filter: blur(18px);
+      overflow: hidden;
+    }
+    .cta-pane::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(520px 240px at 50% 0%, rgba(61, 123, 255, 0.14), transparent 70%);
+      pointer-events: none;
+    }
+    .cta-pane h2 {
+      position: relative;
+      font-size: clamp(26px, 3.4vw, 40px);
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+      text-wrap: balance;
+    }
+    .cta-pane p {
+      position: relative;
+      color: var(--text-muted);
+      max-width: 54ch;
+      margin: 0 auto 30px;
+      font-size: 16px;
+    }
+
+    /* ============================================================
+       FOOTER
+       ============================================================ */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 46px 0 30px;
+      background: var(--bg-deep);
+      margin-top: 40px;
+    }
+    .footer-grid {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr 1fr 1fr;
+      gap: 32px;
+      margin-bottom: 36px;
+    }
+    .footer-brand p { color: var(--text-faint); font-size: 13.5px; margin-top: 12px; max-width: 30ch; }
+    .footer-col h4 {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.10em;
+      margin-bottom: 14px;
+    }
+    .footer-col ul { list-style: none; display: grid; gap: 9px; }
+    .footer-col a { color: var(--text-muted); font-size: 13.5px; }
+    .footer-col a:hover { color: var(--text); }
+
+    .footer-bottom {
+      border-top: 1px solid var(--border);
+      padding-top: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .footer-bottom .copy { color: var(--text-faint); font-size: 13px; }
+    .footer-bottom .links { display: flex; gap: 20px; flex-wrap: wrap; }
+    .footer-bottom .links a { color: var(--text-faint); font-size: 13px; }
+    .footer-bottom .links a:hover { color: var(--text); }
+
+    /* ============================================================
+       MOBILE NAV OVERLAY
+       ============================================================ */
+    .mobile-nav {
+      position: fixed;
+      inset: var(--header-h) 0 auto 0;
+      z-index: 99;
+      background: rgba(11, 14, 20, 0.97);
+      -webkit-backdrop-filter: blur(18px);
+      backdrop-filter: blur(18px);
+      border-bottom: 1px solid var(--border);
+      padding: 24px 6vw 30px;
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .mobile-nav.open { display: flex; }
+    .mobile-nav a {
+      padding: 13px 10px;
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 600;
+      border-radius: 10px;
+      transition: background .15s ease;
+    }
+    .mobile-nav a:hover { background: var(--panel); }
+    .mobile-nav .btn { margin-top: 14px; }
+
+    /* ============================================================
+       RESPONSIVE
+       ============================================================ */
+    @media (max-width: 1024px) {
+      .cards, .steps, .quotes, .pricing { grid-template-columns: repeat(2, 1fr); }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .price-card.featured { order: -1; }
+    }
+
+    @media (max-width: 900px) {
+      .hero .container { grid-template-columns: 1fr; gap: 44px; }
+      .hero { padding-top: calc(var(--header-h) + 50px); }
+      .hero .mock { max-width: 520px; }
+      .contact-grid { grid-template-columns: 1fr; }
+      .footer-grid { grid-template-columns: 1fr 1fr; }
+    }
+
+    @media (max-width: 768px) {
+      .nav { display: none; }
+      .burger { display: flex; }
+      .header-actions .btn { display: none; }  /* login moves into mobile menu */
+      .header-actions .burger { display: flex; }
+      section { padding: 64px 0; }
+      .section-head { margin-bottom: 36px; }
+    }
+
+    @media (max-width: 560px) {
+      .cards, .steps, .quotes, .pricing { grid-template-columns: 1fr; }
+      .form-row { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: 1fr 1fr; gap: 20px; padding: 40px 20px; }
+      .hero-cta .btn { flex: 1 1 auto; }
+      .cta-pane { padding: 54px 22px; }
+      .footer-grid { grid-template-columns: 1fr; gap: 26px; }
+      .strip__items { gap: 22px; }
+    }
+
+    @media (max-width: 380px) {
+      .hero h1 { font-size: 30px; }
+      .brand span { font-size: 15px; }
+      .stats { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; scroll-behavior: auto !important; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ============================================================
+       HEADER
+       ============================================================ -->
+  <header id="header">
+    <div class="container">
+      <!-- EDIT: your logo / brand name -->
+      <a href="/" class="brand" aria-label="Home">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#3d7bff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+          <path d="M16 14a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
+          <path d="M7 9v6"/>
+        </svg>
+        <span>YOUR SITE NAME</span>
+      </a>
+
+      <!-- EDIT: nav links -->
+      <ul class="nav">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#pricing">Pricing</a></li>
+        <li><a href="#faq">FAQ</a></li>
+        <li><a href="#contact">Contact</a></li>
+      </ul>
+
+      <div class="header-actions">
+        <a href="/login" class="btn btn-primary">Login</a>
+        <button class="burger" id="burger" aria-label="Menu" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- mobile menu -->
+  <nav class="mobile-nav" id="mobileNav" aria-hidden="true">
+    <a href="#features">Features</a>
+    <a href="#how">How it works</a>
+    <a href="#pricing">Pricing</a>
+    <a href="#faq">FAQ</a>
+    <a href="#contact">Contact</a>
+    <a href="/login" class="btn btn-primary btn-block">Login</a>
+  </nav>
+
+  <!-- ============================================================
+       HERO
+       ============================================================ -->
+  <section class="hero" id="top">
+    <div class="container">
+      <div>
+        <span class="badge">EDIT: small status / announcement line</span>
+
+        <!-- EDIT: main headline -->
+        <h1>Your headline goes here.<br><span class="accent">One clear benefit.</span></h1>
+
+        <!-- EDIT: sub-copy -->
+        <p class="lead">
+          Write a short description of what your service does and who it is for.
+          This paragraph should make the value obvious in one glance.
+        </p>
+
+        <div class="hero-cta">
+          <a href="/login" class="btn btn-primary btn-lg">Get Started</a>
+          <a href="#features" class="btn btn-ghost btn-lg">Learn More</a>
+        </div>
+
+        <div class="hero-note">
+          <span class="dot"></span>
+          <span>EDIT: trust line — e.g. "No credit card required"</span>
+        </div>
+      </div>
+
+      <!-- EDIT: replace this mock card with a real screenshot -->
+      <div class="mock" aria-hidden="true">
+        <div class="mock__head">
+          <span class="mock__title">Live view</span>
+          <span class="mock__status">Scanning</span>
+        </div>
+        <div class="mock__row">
+          <div>
+            <div class="label">Sample listing title</div>
+            <div class="sub">Sample term · 2 min ago</div>
+          </div>
+          <span class="price deal">£12</span>
+        </div>
+        <div class="mock__row">
+          <div>
+            <div class="label">Sample listing title</div>
+            <div class="sub">Sample term · 5 min ago</div>
+          </div>
+          <span class="price">£24</span>
+        </div>
+        <div class="mock__row">
+          <div>
+            <div class="label">Sample listing title</div>
+            <div class="sub">Sample term · 11 min ago</div>
+          </div>
+          <span class="price">£31</span>
+        </div>
+        <div class="mock__foot">
+          <span>Placeholder panel</span>
+          <span>DELETE ME</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       TRUST STRIP — EDIT: brands / stats
+       ============================================================ -->
+  <div class="strip">
+    <div class="container">
+      <span class="strip__label">Trusted by</span>
+      <div class="strip__items">
+        <span class="strip__item">BRAND 1</span>
+        <span class="strip__item">BRAND 2</span>
+        <span class="strip__item">BRAND 3</span>
+        <span class="strip__item">BRAND 4</span>
+        <span class="strip__item">BRAND 5</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       FEATURES
+       ============================================================ -->
+  <section id="features">
+    <div class="container">
+      <div class="section-head center">
+        <h2>Features — <span class="accent">section heading</span></h2>
+        <p>One or two sentences introducing what follows. Replace me.</p>
+      </div>
+
+      <div class="cards">
+        <!-- card 1 -->
+        <div class="card">
+          <div class="icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+            </svg>
+          </div>
+          <h3>Feature title</h3>
+          <p>Describe this feature in one or two sentences. What problem does it solve for the user?</p>
+        </div>
+
+        <!-- card 2 -->
+        <div class="card">
+          <div class="icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 6v6l4 2"/>
+            </svg>
+          </div>
+          <h3>Feature title</h3>
+          <p>Describe this feature in one or two sentences. What problem does it solve for the user?</p>
+        </div>
+
+        <!-- card 3 -->
+        <div class="card">
+          <div class="icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 2L11 13"/>
+              <path d="M22 2l-7 20-4-9-9-4 20-7z"/>
+            </svg>
+          </div>
+          <h3>Feature title</h3>
+          <p>Describe this feature in one or two sentences. What problem does it solve for the user?</p>
+        </div>
+
+        <!-- card 4 -->
+        <div class="card">
+          <div class="icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="16" rx="2"/>
+              <path d="M3 10h18"/>
+              <path d="M8 15h4"/>
+            </svg>
+          </div>
+          <h3>Feature title</h3>
+          <p>Describe this feature in one or two sentences. What problem does it solve for the user?</p>
+        </div>
+
+        <!-- card 5 -->
+        <div class="card">
+          <div class="icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2l2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.5-4.8 2.5.9-5.4L4.2 7.7l5.4-.8L12 2z"/>
+            </svg>
+          </div>
+          <h3>Feature title</h3>
+          <p>Describe this feature in one or two sentences. What problem does it solve for the user?</p>
+        </div>
+
+        <!-- card 6 -->
+        <div class="card">
+          <div class="icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+          </div>
+          <h3>Feature title</h3>
+          <p>Describe this feature in one or two sentences. What problem does it solve for the user?</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       HOW IT WORKS
+       ============================================================ -->
+  <section id="how" class="section-alt">
+    <div class="container">
+      <div class="section-head center">
+        <h2>How it works — <span class="accent">section heading</span></h2>
+        <p>One or two sentences introducing the process. Replace me.</p>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step__num">1</div>
+          <h3>Step title</h3>
+          <p>Explain step one briefly. What does the user do first?</p>
+        </div>
+        <div class="step">
+          <div class="step__num">2</div>
+          <h3>Step title</h3>
+          <p>Explain step two briefly. What happens next?</p>
+        </div>
+        <div class="step">
+          <div class="step__num">3</div>
+          <h3>Step title</h3>
+          <p>Explain step three briefly. What is the outcome?</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       STATS
+       ============================================================ -->
+  <section id="stats" style="padding-top: 64px; padding-bottom: 64px;">
+    <div class="container">
+      <div class="stats">
+        <div class="stat">
+          <div class="num accent">00</div>
+          <div class="cap">Stat label one</div>
+        </div>
+        <div class="stat">
+          <div class="num">00</div>
+          <div class="cap">Stat label two</div>
+        </div>
+        <div class="stat">
+          <div class="num accent">00</div>
+          <div class="cap">Stat label three</div>
+        </div>
+        <div class="stat">
+          <div class="num">00</div>
+          <div class="cap">Stat label four</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       PRICING
+       ============================================================ -->
+  <section id="pricing" class="section-alt">
+    <div class="container">
+      <div class="section-head center">
+        <h2>Pricing — <span class="accent">section heading</span></h2>
+        <p>One or two sentences introducing pricing. Replace me.</p>
+      </div>
+
+      <div class="pricing">
+        <!-- tier 1 -->
+        <div class="price-card">
+          <div class="price-card__name">Plan name</div>
+          <div class="price-card__amount">£0 <span class="per">/ demo</span></div>
+          <p class="price-card__desc">Short description of this plan.</p>
+          <ul>
+            <li>Feature point one</li>
+            <li>Feature point two</li>
+            <li>Feature point three</li>
+          </ul>
+          <a href="/login" class="btn btn-ghost btn-block">Choose Plan</a>
+        </div>
+
+        <!-- tier 2 (featured) -->
+        <div class="price-card featured">
+          <div class="price-card__name">Plan name</div>
+          <div class="price-card__amount">£00 <span class="per">/ demo</span></div>
+          <p class="price-card__desc">Short description of this plan.</p>
+          <ul>
+            <li>Feature point one</li>
+            <li>Feature point two</li>
+            <li>Feature point three</li>
+            <li>Feature point four</li>
+          </ul>
+          <a href="/login" class="btn btn-primary btn-block">Choose Plan</a>
+        </div>
+
+        <!-- tier 3 -->
+        <div class="price-card">
+          <div class="price-card__name">Plan name</div>
+          <div class="price-card__amount">£00 <span class="per">/ demo</span></div>
+          <p class="price-card__desc">Short description of this plan.</p>
+          <ul>
+            <li>Feature point one</li>
+            <li>Feature point two</li>
+            <li>Feature point three</li>
+          </ul>
+          <a href="/login" class="btn btn-ghost btn-block">Choose Plan</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       TESTIMONIALS
+       ============================================================ -->
+  <section id="testimonials">
+    <div class="container">
+      <div class="section-head center">
+        <h2>Testimonials — <span class="accent">section heading</span></h2>
+        <p>One or two sentences introducing social proof. Replace me.</p>
+      </div>
+
+      <div class="quotes">
+        <div class="quote">
+          <div class="stars">&#9733;&#9733;&#9733;&#9733;&#9733;</div>
+          <p>"Replace with a customer quote about your service."</p>
+          <div class="quote__who">
+            <div class="quote__avatar">JD</div>
+            <div>
+              <div class="quote__name">Jane Doe</div>
+              <div class="quote__role">Role / company</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="quote">
+          <div class="stars">&#9733;&#9733;&#9733;&#9733;&#9733;</div>
+          <p>"Replace with a customer quote about your service."</p>
+          <div class="quote__who">
+            <div class="quote__avatar">JS</div>
+            <div>
+              <div class="quote__name">John Smith</div>
+              <div class="quote__role">Role / company</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="quote">
+          <div class="stars">&#9733;&#9733;&#9733;&#9733;&#9733;</div>
+          <p>"Replace with a customer quote about your service."</p>
+          <div class="quote__who">
+            <div class="quote__avatar">AK</div>
+            <div>
+              <div class="quote__name">Alex Kim</div>
+              <div class="quote__role">Role / company</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       FAQ
+       ============================================================ -->
+  <section id="faq" class="section-alt">
+    <div class="container">
+      <div class="section-head center">
+        <h2>FAQ — <span class="accent">section heading</span></h2>
+        <p>One or two sentences introducing the FAQ. Replace me.</p>
+      </div>
+
+      <div class="faq">
+        <div class="faq-item open">
+          <button class="faq-q" aria-expanded="true">
+            Question one goes here?
+            <span class="chev">+</span>
+          </button>
+          <div class="faq-a">
+            <div class="faq-a-inner">Answer one goes here. Keep it concise and useful.</div>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            Question two goes here?
+            <span class="chev">+</span>
+          </button>
+          <div class="faq-a">
+            <div class="faq-a-inner">Answer two goes here. Keep it concise and useful.</div>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            Question three goes here?
+            <span class="chev">+</span>
+          </button>
+          <div class="faq-a">
+            <div class="faq-a-inner">Answer three goes here. Keep it concise and useful.</div>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            Question four goes here?
+            <span class="chev">+</span>
+          </button>
+          <div class="faq-a">
+            <div class="faq-a-inner">Answer four goes here. Keep it concise and useful.</div>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            Question five goes here?
+            <span class="chev">+</span>
+          </button>
+          <div class="faq-a">
+            <div class="faq-a-inner">Answer five goes here. Keep it concise and useful.</div>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            Question six goes here?
+            <span class="chev">+</span>
+          </button>
+          <div class="faq-a">
+            <div class="faq-a-inner">Answer six goes here. Keep it concise and useful.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       CONTACT
+       ============================================================ -->
+  <section id="contact">
+    <div class="container">
+      <div class="section-head center">
+        <h2>Contact — <span class="accent">section heading</span></h2>
+        <p>One or two sentences introducing contact. Replace me.</p>
+      </div>
+
+      <div class="contact-grid">
+        <div class="contact-info">
+          <h3>Get in touch</h3>
+          <p>Short blurb about response times or preferred channels. Replace me.</p>
+
+          <div class="contact-line">
+            <div class="icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 4h16v16H4z"/>
+                <path d="M4 6l8 7 8-7"/>
+              </svg>
+            </div>
+            <div>
+              <div class="k">Email</div>
+              <div class="v"><a href="mailto:hello@yoursite.com">hello@yoursite.com</a></div>
+            </div>
+          </div>
+
+          <div class="contact-line">
+            <div class="icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a7 7 0 0 1 7 7c0 5-7 13-7 13S5 14 5 9a7 7 0 0 1 7-7z"/>
+                <circle cx="12" cy="9" r="2.5"/>
+              </svg>
+            </div>
+            <div>
+              <div class="k">Support hours</div>
+              <div class="v">EDIT: e.g. Mon–Fri, 9:00–18:00</div>
+            </div>
+          </div>
+
+          <div class="contact-line">
+            <div class="icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 6v6l4 2"/>
+              </svg>
+            </div>
+            <div>
+              <div class="k">Response time</div>
+              <div class="v">EDIT: e.g. within 24 hours</div>
+            </div>
+          </div>
+
+          <div class="contact-line">
+            <div class="icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>
+              </svg>
+            </div>
+            <div>
+              <div class="k">Social / Discord</div>
+              <div class="v">EDIT: link or handle</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- demo contact form — wire up to your backend when ready -->
+        <form class="contact-form" id="contactForm" novalidate>
+          <div class="form-row">
+            <div class="field">
+              <label for="cf-name">Name</label>
+              <input id="cf-name" name="name" type="text" placeholder="Your name" autocomplete="name">
+            </div>
+            <div class="field">
+              <label for="cf-email">Email</label>
+              <input id="cf-email" name="email" type="email" placeholder="you@example.com" autocomplete="email">
+            </div>
+          </div>
+          <div class="field">
+            <label for="cf-subject">Subject</label>
+            <input id="cf-subject" name="subject" type="text" placeholder="What is this about?">
+          </div>
+          <div class="field">
+            <label for="cf-msg">Message</label>
+            <textarea id="cf-msg" name="message" placeholder="Write your message..."></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block">Send Message</button>
+          <p class="form-note">Demo form — connect it to your backend or an email service before launch.</p>
+          <div class="form-ok" id="formOk">Message sent. Thank you.</div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       CTA
+       ============================================================ -->
+  <section id="cta" style="padding-top: 0; padding-bottom: 90px;">
+    <div class="container">
+      <div class="cta-pane">
+        <h2>One final line of persuasion.</h2>
+        <p>Close the sale here — restate the main benefit and tell them what happens after clicking the button.</p>
+        <a href="/login" class="btn btn-primary btn-lg">Get Started</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       FOOTER
+       ============================================================ -->
+  <footer>
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <!-- EDIT: logo + tagline -->
+          <a href="/" class="brand">
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#3d7bff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+              <path d="M16 14a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
+              <path d="M7 9v6"/>
+            </svg>
+            <span>YOUR SITE NAME</span>
+          </a>
+          <p>EDIT: one-line tagline for the footer.</p>
+        </div>
+
+        <!-- EDIT: footer link columns -->
+        <div class="footer-col">
+          <h4>Product</h4>
+          <ul>
+            <li><a href="#features">Features</a></li>
+            <li><a href="#pricing">Pricing</a></li>
+            <li><a href="#how">How it works</a></li>
+            <li><a href="/login">Login</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-col">
+          <h4>Company</h4>
+          <ul>
+            <li><a href="#">About</a></li>
+            <li><a href="#faq">FAQ</a></li>
+            <li><a href="#contact">Contact</a></li>
+            <li><a href="#">Careers</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-col">
+          <h4>Legal</h4>
+          <ul>
+            <li><a href="#">Terms of Service</a></li>
+            <li><a href="#">Privacy Policy</a></li>
+            <li><a href="#">Cookies</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <span class="copy">© 2026 YOUR SITE NAME. All rights reserved.</span>
+        <div class="links">
+          <a href="/login">Login</a>
+          <a href="#">Status</a>
+          <a href="#">Support</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      'use strict';
+
+      /* ---------- header glass on scroll ---------- */
+      var header = document.getElementById('header');
+      function onScroll() {
+        header.classList.toggle('scrolled', window.scrollY > 10);
+      }
+      window.addEventListener('scroll', onScroll, { passive: true });
+      onScroll();
+
+      /* ---------- mobile menu ---------- */
+      var burger = document.getElementById('burger');
+      var mobileNav = document.getElementById('mobileNav');
+      function closeMenu() {
+        burger.classList.remove('open');
+        mobileNav.classList.remove('open');
+        burger.setAttribute('aria-expanded', 'false');
+        mobileNav.setAttribute('aria-hidden', 'true');
+      }
+      burger.addEventListener('click', function () {
+        var open = mobileNav.classList.toggle('open');
+        burger.classList.toggle('open', open);
+        burger.setAttribute('aria-expanded', String(open));
+        mobileNav.setAttribute('aria-hidden', String(!open));
+      });
+      mobileNav.querySelectorAll('a').forEach(function (a) {
+        a.addEventListener('click', closeMenu);
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeMenu();
+      });
+
+      /* ---------- FAQ accordion ---------- */
+      var faqItems = document.querySelectorAll('.faq-item');
+      faqItems.forEach(function (item) {
+        var btn = item.querySelector('.faq-q');
+        var ans = item.querySelector('.faq-a');
+        btn.addEventListener('click', function () {
+          var isOpen = item.classList.contains('open');
+          // close all
+          faqItems.forEach(function (other) {
+            other.classList.remove('open');
+            other.querySelector('.faq-a').style.maxHeight = null;
+            other.querySelector('.faq-q').setAttribute('aria-expanded', 'false');
+          });
+          // open clicked one (toggle)
+          if (!isOpen) {
+            item.classList.add('open');
+            ans.style.maxHeight = ans.scrollHeight + 'px';
+            btn.setAttribute('aria-expanded', 'true');
+          }
+        });
+      });
+      // keep the initially-open item sized correctly on load / resize
+      var openItem = document.querySelector('.faq-item.open .faq-a');
+      if (openItem) openItem.style.maxHeight = openItem.scrollHeight + 'px';
+      window.addEventListener('resize', function () {
+        document.querySelectorAll('.faq-item.open .faq-a').forEach(function (a) {
+          a.style.maxHeight = a.scrollHeight + 'px';
+        });
+      }, { passive: true });
+
+      /* ---------- demo contact form ---------- */
+      var form = document.getElementById('contactForm');
+      var okBox = document.getElementById('formOk');
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        // EDIT: replace with fetch() to your real endpoint
+        okBox.style.display = 'block';
+        form.reset();
+        setTimeout(function () { okBox.style.display = 'none'; }, 4000);
+      });
+    })();
+  </script>
+</body>
+</html>
