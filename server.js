@@ -71,6 +71,7 @@ const ICON_URL = 'https://cdn-icons-png.flaticon.com/512/2331/2331966.png';
 // ─── Constants ──────────────────────────────────────────────────────────
 const MAX_TERMS = 30;
 const MEMBERSHIP_SYNC_INTERVAL = 60000; // 1 minute
+const SCAN_INTERVAL_MINUTES = 3;        // fixed scan frequency (was user-selectable)
 
 // ─── In-memory state ──────────────────────────────────────────────────
 const sessions = new Map();           // userId -> { lastActive, membership }
@@ -189,56 +190,41 @@ function getUserData(userId) {
   return userCache.get(userId);
 }
 
-// ─── Price analysis and average calculation ──────────────────────────
-function computeAverage(listings) {
-  const prices = listings
-    .map(l => parseFloat(l.price.replace(/[^0-9.]/g, '')))
-    .filter(p => !isNaN(p) && p > 0);
-  if (prices.length === 0) return null;
-  const sum = prices.reduce((a, b) => a + b, 0);
-  return Math.round((sum / prices.length) * 100) / 100;
-}
+// ─── Price analysis (max price based — no average guessing) ────────────
+// A bargain is any listing priced at or below the user's maxPrice.
+// "discount" is how far below the limit the item is (percentage).
+function analyzePrices(listings, maxPrice) {
+  if (!listings || listings.length === 0) return { bargains: [], stats: null };
+  const max = parseFloat(maxPrice);
+  if (isNaN(max) || max <= 0) return { bargains: [], stats: null };
 
-function analyzePrices(listings, averagePrice, thresholdPercent) {
-  if (!listings || listings.length === 0 || !averagePrice) return { bargains: [], stats: null };
-  const threshold = thresholdPercent || 20;
-  const bargains = listings.filter(l => {
-    const price = parseFloat(l.price.replace(/[^0-9.]/g, ''));
-    if (isNaN(price)) return false;
-    const discount = ((averagePrice - price) / averagePrice) * 100;
-    return discount >= threshold;
-  }).map(l => {
-    const price = parseFloat(l.price.replace(/[^0-9.]/g, ''));
-    const discount = ((averagePrice - price) / averagePrice) * 100;
-    return { ...l, discount: Math.round(discount * 100) / 100 };
-  });
+  const bargains = listings
+    .map(l => ({ l, price: parseFloat(String(l.price).replace(/[^0-9.]/g, '')) }))
+    .filter(x => !isNaN(x.price) && x.price > 0 && x.price <= max)
+    .map(x => ({
+      ...x.l,
+      discount: Math.round(((max - x.price) / max) * 10000) / 100,
+      maxPrice: max
+    }))
+    .sort((a, b) => {
+      const pa = parseFloat(String(a.price).replace(/[^0-9.]/g, ''));
+      const pb = parseFloat(String(b.price).replace(/[^0-9.]/g, ''));
+      return pa - pb; // cheapest first
+    });
+
   return {
-    bargains: bargains.sort((a, b) => b.discount - a.discount),
-    stats: { average: averagePrice, threshold, totalListings: listings.length, bargainCount: bargains.length }
+    bargains,
+    stats: { maxPrice: max, totalListings: listings.length, bargainCount: bargains.length }
   };
 }
 
 // ─── Process scraped data ─────────────────────────────────────────────
-function processScrapedListings(userId, term, scraped, jobType) {
+function processScrapedListings(userId, term, scraped) {
   const userData = getUserData(userId);
   const termObj = userData.terms.find(t => t.term === term);
   if (!termObj) {
     console.error(`Term "${term}" not found for user ${userId}`);
-    return { added: 0, newListings: [], averageComputed: false };
-  }
-
-  if (jobType === 'scan_all') {
-    const avg = computeAverage(scraped);
-    if (avg !== null) {
-      termObj.averagePrice = avg;
-      saveUserTerms(userId, userData.terms);
-      console.log(`User ${userId} average for "${term}" set to £${avg}`);
-      broadcastUpdate(userId);
-      return { added: 0, newListings: [], averageComputed: true };
-    } else {
-      console.log(`No valid prices found for "${term}" to compute average`);
-      return { added: 0, newListings: [], averageComputed: false };
-    }
+    return { added: 0, newListings: [] };
   }
 
   const existing = loadUserHistory(userId, term);
@@ -253,8 +239,8 @@ function processScrapedListings(userId, term, scraped, jobType) {
   saveUserHistory(userId, term, updated);
   saveUserUnique(userId, term, newListings);
 
-  if (termObj.averagePrice) {
-    const analysis = analyzePrices(updated, termObj.averagePrice, termObj.thresholdPercent);
+  if (termObj.maxPrice) {
+    const analysis = analyzePrices(updated, termObj.maxPrice);
     if (analysis.bargains.length > 0) {
       const notified = userData.notified[term] || [];
       const notifiedSet = new Set(notified);
@@ -267,7 +253,7 @@ function processScrapedListings(userId, term, scraped, jobType) {
 
         userData.bargains[term] = freshBargains;
         broadcastBargains(userId, term, freshBargains);
-        // One push popup PER bargain — this is what triggers the notification
+        // One push popup PER bargain under the price limit
         sendPushNotifications(userId, term, freshBargains);
       }
     }
@@ -304,8 +290,10 @@ function sendPushNotifications(userId, term, bargainsList) {
   // One notification per bargain so the user gets a popup for every deal.
   for (const item of bargainsList) {
     const name = (item.name || 'New bargain').substring(0, 60);
-    const title = `${item.price} · ${name}`;
-    const parts = [`${item.discount}% below average`];
+    const title = `${item.price} - ${name}`;
+    const parts = [];
+    if (item.maxPrice) parts.push(`Under your £${Number(item.maxPrice).toFixed(2)} limit`);
+    if (typeof item.discount === 'number') parts.push(`${item.discount}% below limit`);
     if (item.size) parts.push(`Size ${item.size}`);
     if (item.condition) parts.push(item.condition);
     const body = parts.join(' · ');
@@ -520,119 +508,135 @@ const HTML = `<!DOCTYPE html>
 <style>
 /* ── Reset & base ───────────────────────────────────────────── */
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,-apple-system,sans-serif;background:#f5f6fa;color:#2c3e50;padding:12px;min-height:100vh}
+:root{
+  --blue:#2563eb;--blue-dark:#1d4ed8;
+  --red:#dc2626;--red-dark:#b91c1c;
+  --green:#16a34a;--green-dark:#15803d;
+  --ink:#111827;--muted:#6b7280;--gray:#9ca3af;
+  --border:#e5e7eb;--bg:#f7f7f7;--card:#ffffff;
+}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink);padding:12px;min-height:100vh}
 
 /* ── Container ──────────────────────────────────────────────── */
 .container{max-width:1200px;margin:0 auto}
 .hidden{display:none !important}
 
 /* ── Login ──────────────────────────────────────────────────── */
-.login-container{max-width:400px;margin:60px auto;background:#fff;border-radius:12px;padding:24px;box-shadow:0 4px 20px rgba(0,0,0,0.08)}
-.login-container h2{margin-top:0;font-weight:500;font-size:24px}
-.login-container input{width:100%;padding:14px;margin:10px 0;border:1px solid #ddd;border-radius:8px;font-size:16px}
-.login-container button{width:100%;padding:14px;background:#3498db;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer}
-.login-container .error{color:#e74c3c;font-size:14px;margin-top:5px}
+.login-container{max-width:400px;margin:60px auto;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px}
+.login-container h2{margin-top:0;font-weight:600;font-size:24px}
+.login-container p{color:var(--muted);font-size:14px;margin:6px 0}
+.login-container input{width:100%;padding:12px;margin:10px 0;border:1px solid var(--border);border-radius:6px;font-size:16px}
+.login-container button{width:100%;padding:12px;background:var(--blue);color:#fff;border:none;border-radius:6px;font-size:16px;font-weight:600;cursor:pointer}
+.login-container button:hover{background:var(--blue-dark)}
+.login-container .error{color:var(--red);font-size:14px;margin-top:5px}
 
 /* ── Header ────────────────────────────────────────────────── */
 .header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px}
-.header h1{font-size:22px;font-weight:600;letter-spacing:-0.3px}
+.header h1{font-size:22px;font-weight:700;letter-spacing:-0.3px;color:#000}
 .header .user{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.header .user span{font-size:14px;background:#ecf0f1;padding:4px 12px;border-radius:20px}
-.logout-btn{background:#e74c3c;color:#fff;padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-weight:500;font-size:14px}
+.header .user span{font-size:14px;background:var(--bg);border:1px solid var(--border);padding:4px 12px;border-radius:6px}
+.logout-btn{background:var(--red);color:#fff;padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-weight:500;font-size:14px}
+.logout-btn:hover{background:var(--red-dark)}
 
 /* ── Cards ──────────────────────────────────────────────────── */
-.card{background:#fff;border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06)}
-.card h3{font-size:17px;font-weight:600;margin-bottom:12px;color:#34495e}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px}
+.card h3{font-size:16px;font-weight:600;margin-bottom:12px;color:#000}
 
 /* ── Push card ─────────────────────────────────────────────── */
-.push-card{background:#e8f4fd;border:1px solid #b8d4e8;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px;margin-bottom:16px}
+.push-card{background:var(--card);border:1px solid var(--blue);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px;margin-bottom:16px}
 .push-card .row{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
 .push-card .status{display:flex;align-items:center;gap:8px;font-size:14px}
-.push-card .status .badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600}
-.badge-push-on{background:#2ecc71;color:#fff}
-.badge-push-off{background:#95a5a6;color:#fff}
-.push-card .instructions{font-size:14px;background:#fff;padding:12px 14px;border-radius:8px;border-left:4px solid #3498db;display:none}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.dot-on{background:var(--green)}
+.dot-off{background:var(--gray)}
+.dot-warn{background:var(--red)}
+.push-card .instructions{font-size:14px;background:var(--bg);padding:12px 14px;border-radius:6px;border-left:4px solid var(--blue);display:none}
 .push-card .instructions.show{display:block}
-.push-card .instructions strong{color:#e67e22}
-button{background:#3498db;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:500;cursor:pointer;touch-action:manipulation}
-button:hover{background:#2980b9}
-button.secondary{background:#95a5a6}
-button.secondary:hover{background:#7f8c8d}
-button.danger{background:#e74c3c}
-button.danger:hover{background:#c0392b}
-button.success{background:#2ecc71}
-button.success:hover{background:#27ae60}
+.push-card .instructions strong{color:#000}
+
+button{background:var(--blue);color:#fff;border:none;border-radius:6px;padding:10px 18px;font-size:14px;font-weight:500;cursor:pointer;touch-action:manipulation}
+button:hover{background:var(--blue-dark)}
+button.secondary{background:var(--muted)}
+button.secondary:hover{background:#4b5563}
+button.danger{background:var(--red)}
+button.danger:hover{background:var(--red-dark)}
+button.success{background:var(--green)}
+button.success:hover{background:var(--green-dark)}
 button:disabled{opacity:0.6;cursor:not-allowed}
 
 /* ── Add term form ──────────────────────────────────────────── */
 .add-form{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
-.add-form .field{flex:1 1 160px;min-width:130px}
-.add-form .field label{display:block;font-size:13px;font-weight:500;margin-bottom:3px;color:#7f8c8d}
-.add-form .field input,.add-form .field select{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;background:#fff}
-.add-form .field input{flex:1}
-.add-form .field .help{font-size:11px;color:#95a5a6;margin-top:2px}
+.add-form .field{flex:1 1 220px;min-width:180px}
+.add-form .field label{display:block;font-size:13px;font-weight:600;margin-bottom:3px;color:#000}
+.add-form .field input,.add-form .field select{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--card)}
+.add-form .field .price-input{display:flex;align-items:center;border:1px solid var(--border);border-radius:6px;background:var(--card);overflow:hidden}
+.add-form .field .price-input .currency{background:var(--bg);padding:10px 12px;font-size:14px;color:var(--muted);border-right:1px solid var(--border)}
+.add-form .field .price-input input{width:100%;border:none;outline:none;padding:10px 12px;font-size:14px}
+.add-form .field .help{font-size:11px;color:var(--muted);margin-top:3px}
 .add-form button{align-self:center;padding:10px 20px}
-.term-limit-warning{color:#e67e22;font-size:14px;margin-top:6px;display:none}
+.term-limit-warning{color:var(--red);font-size:14px;margin-top:6px;display:none}
 
 /* ── Tabs ──────────────────────────────────────────────────── */
-.tabs{display:flex;gap:6px;border-bottom:2px solid #ddd;margin-bottom:16px;flex-wrap:wrap}
-.tab{padding:10px 14px;cursor:pointer;border:none;background:none;font-weight:500;color:#7f8c8d;font-size:15px;border-bottom:2px solid transparent;margin-bottom:-2px}
-.tab.active{color:#3498db;border-bottom-color:#3498db}
+.tabs{display:flex;gap:6px;border-bottom:2px solid var(--border);margin-bottom:16px;flex-wrap:wrap}
+.tab{padding:10px 14px;cursor:pointer;border:none;background:none;font-weight:500;color:var(--muted);font-size:15px;border-bottom:2px solid transparent;margin-bottom:-2px}
+.tab.active{color:var(--blue);border-bottom-color:var(--blue)}
 .tab-content{display:none}
 .tab-content.active{display:block}
 
 /* ── Terms – Desktop table ─────────────────────────────────── */
 .table-wrap{overflow-x:auto;margin-top:4px}
 .terms-table{width:100%;border-collapse:collapse;font-size:14px}
-.terms-table th{text-align:left;padding:10px 8px;background:#f8f9fa;font-weight:600;color:#2c3e50;border-bottom:2px solid #ecf0f1}
-.terms-table td{padding:10px 8px;border-bottom:1px solid #ecf0f1;vertical-align:middle}
+.terms-table th{text-align:left;padding:10px 8px;background:var(--bg);font-weight:600;color:#000;border-bottom:2px solid var(--border)}
+.terms-table td{padding:10px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
 .terms-table .actions{display:flex;flex-wrap:wrap;gap:6px}
-.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600}
-.badge-active{background:#2ecc71;color:#fff}
-.badge-idle{background:#bdc3c7;color:#2c3e50}
-.badge-bargain{background:#e74c3c;color:#fff}
+.badge{display:inline-block;padding:2px 10px;border-radius:4px;font-size:12px;font-weight:600}
+.badge-active{background:var(--green);color:#fff}
+.badge-idle{background:var(--gray);color:#fff}
+.badge-bargain{background:var(--red);color:#fff}
+.badge-push-on{background:var(--green);color:#fff}
+.badge-push-off{background:var(--gray);color:#fff}
+.badge-push-warn{background:var(--red);color:#fff}
 
 /* ── Terms – Mobile card layout ────────────────────────────── */
-.term-card{background:#f8f9fa;border-radius:8px;padding:12px;margin-bottom:10px;border-left:4px solid #3498db;display:none}
+.term-card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:10px;border-left:4px solid var(--blue);display:none}
 .term-card .row{display:flex;justify-content:space-between;flex-wrap:wrap;margin:2px 0;font-size:14px}
-.term-card .label{color:#7f8c8d;font-weight:500;min-width:80px}
+.term-card .label{color:var(--muted);font-weight:500;min-width:80px}
 .term-card .value{font-weight:500}
 .term-card .actions{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
 
 /* ── Bargains ───────────────────────────────────────────────── */
-.bargain-item{background:#fef9e7;border-left:4px solid #e74c3c;padding:12px;margin-bottom:8px;border-radius:6px;font-size:14px}
+.bargain-item{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--red);padding:12px;margin-bottom:8px;border-radius:6px;font-size:14px}
 .bargain-item strong{display:block;margin-bottom:4px}
 .bargain-item .meta{display:flex;flex-wrap:wrap;gap:12px;font-size:13px}
-.bargain-item .meta a{color:#3498db;text-decoration:none;font-weight:500}
+.bargain-item .meta a{color:var(--blue);text-decoration:none;font-weight:500}
 
 /* ── Workers ────────────────────────────────────────────────── */
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin:8px 0}
-.stat-box{background:#f8f9fa;padding:12px;border-radius:8px;text-align:center}
-.stat-box .value{font-size:20px;font-weight:600;color:#2c3e50}
-.stat-box .label{font-size:12px;color:#7f8c8d}
+.stat-box{background:var(--bg);border:1px solid var(--border);padding:12px;border-radius:6px;text-align:center}
+.stat-box .value{font-size:20px;font-weight:600;color:#000}
+.stat-box .label{font-size:12px;color:var(--muted)}
 .workers-table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
-.workers-table th{text-align:left;padding:8px;background:#f8f9fa;border-bottom:2px solid #ecf0f1}
-.workers-table td{padding:8px;border-bottom:1px solid #ecf0f1}
+.workers-table th{text-align:left;padding:8px;background:var(--bg);border-bottom:2px solid var(--border)}
+.workers-table td{padding:8px;border-bottom:1px solid var(--border)}
 
 /* ── Log ────────────────────────────────────────────────────── */
-.log{background:#2c3e50;color:#ecf0f1;padding:12px;border-radius:8px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:13px;line-height:1.5}
-.log .timestamp{color:#7f8c8d}
-.log .info{color:#3498db}
-.log .success{color:#2ecc71}
-.log .warning{color:#f1c40f}
-.log .bargain{color:#e74c3c;font-weight:700}
+.log{background:#111827;color:#f9fafb;padding:12px;border-radius:6px;font-family:monospace;max-height:200px;overflow-y:auto;font-size:13px;line-height:1.5}
+.log .timestamp{color:#9ca3af}
+.log .info{color:#60a5fa}
+.log .success{color:#4ade80}
+.log .warning{color:#d1d5db}
+.log .bargain{color:#f87171;font-weight:700}
 
-.empty{color:#95a5a6;text-align:center;padding:20px;font-size:15px}
+.empty{color:var(--muted);text-align:center;padding:20px;font-size:15px}
 
 /* ── Password popup ─────────────────────────────────────────── */
-.password-popup-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999;backdrop-filter:blur(4px)}
-.password-popup{background:#fff;border-radius:16px;padding:30px 24px;max-width:420px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.4);animation:popIn 0.25s ease-out}
-.password-popup h2{color:#e74c3c;margin-top:0;font-size:26px}
-.password-popup .password{background:#f8f9fa;padding:14px;border-radius:8px;font-size:28px;font-weight:700;font-family:monospace;letter-spacing:2px;color:#2c3e50;margin:16px 0;border:2px dashed #3498db}
-.password-popup p{color:#555;line-height:1.5;margin-bottom:12px}
-.password-popup .warning{color:#e74c3c;font-weight:600;font-size:14px}
-.password-popup button{padding:12px 32px;background:#3498db;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer}
-@keyframes popIn{0%{transform:scale(0.9);opacity:0}100%{transform:scale(1);opacity:1}}
+.password-popup-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999}
+.password-popup{background:var(--card);border-radius:8px;padding:30px 24px;max-width:420px;width:90%;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,0.3)}
+.password-popup h2{color:var(--red);margin-top:0;font-size:24px}
+.password-popup .password{background:var(--bg);padding:14px;border-radius:6px;font-size:28px;font-weight:700;font-family:monospace;letter-spacing:2px;color:#000;margin:16px 0;border:2px dashed var(--blue)}
+.password-popup p{color:var(--muted);line-height:1.5;margin-bottom:12px}
+.password-popup .warning{color:var(--red);font-weight:600;font-size:14px}
+.password-popup button{padding:12px 32px;background:var(--blue);color:#fff;border:none;border-radius:6px;font-size:16px;font-weight:600;cursor:pointer}
 
 /* ─── Responsive breakpoints ────────────────────────────────── */
 @media (max-width: 767px) {
@@ -662,11 +666,11 @@ button:disabled{opacity:0.6;cursor:not-allowed}
 
 <div id="passwordPopup" class="password-popup-overlay" style="display:none;">
 <div class="password-popup">
-<h2>🔑 Your Access Code</h2>
+<h2>Your Access Code</h2>
 <p>Your password is:</p>
 <div class="password" id="displayPassword"></div>
 <p><strong>Write this down so it won't get lost!</strong></p>
-<p class="warning">⚠️ You will need this code to log in.</p>
+<p class="warning">You will need this code to log in.</p>
 <br>
 <button id="dismissPopup">I've saved my password</button>
 </div>
@@ -682,7 +686,7 @@ button:disabled{opacity:0.6;cursor:not-allowed}
 
 <div id="dashboard" class="container hidden">
 <div class="header">
-<h1>🛍️ Vinted Monitor</h1>
+<h1>Vinted Monitor</h1>
 <div class="user">
 <span id="userDisplay"></span>
 <button class="logout-btn" id="logoutBtn">Logout</button>
@@ -693,18 +697,18 @@ button:disabled{opacity:0.6;cursor:not-allowed}
 <div class="push-card" id="pushCard">
   <div class="row">
     <div class="status">
-      <span id="pushStatusIcon">🔔</span>
+      <span id="pushStatusDot" class="dot dot-off"></span>
       <span id="pushStatusText">Notifications: Checking...</span>
       <span id="pushStatusBadge" class="badge badge-push-off">Off</span>
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:8px;">
-      <button id="enablePushBtn" class="success">🔔 Enable Notifications</button>
-      <button id="testPushBtn" class="success" style="display:none;">🔔 Test</button>
-      <button id="refreshPushBtn" class="secondary" style="display:none;">🔄 Refresh</button>
+      <button id="enablePushBtn" class="success">Enable Notifications</button>
+      <button id="testPushBtn" class="success" style="display:none;">Test</button>
+      <button id="refreshPushBtn" class="secondary" style="display:none;">Refresh</button>
     </div>
   </div>
   <div id="pushInstructions" class="instructions">
-    <strong>📱 Device instructions:</strong> <span id="deviceInstructions">Loading...</span>
+    <strong>Device instructions:</strong> <span id="deviceInstructions">Loading...</span>
   </div>
 </div>
 
@@ -717,29 +721,22 @@ button:disabled{opacity:0.6;cursor:not-allowed}
     <input type="text" id="newTerm" placeholder="e.g., cortiez hoodie" />
   </div>
   <div class="field">
-    <label>Deal %</label>
-    <input type="number" id="threshold" value="20" step="1" min="0" />
-    <div class="help">% below average</div>
-  </div>
-  <div class="field">
-    <label>Interval</label>
-    <select id="interval">
-      <option value="5">5 min</option><option value="10">10 min</option>
-      <option value="15">15 min</option><option value="20">20 min</option>
-      <option value="30">30 min</option><option value="45">45 min</option>
-      <option value="60">60 min</option>
-    </select>
-    <div class="help">scan frequency</div>
+    <label>Notify me when a new listing is under</label>
+    <div class="price-input">
+      <span class="currency">£</span>
+      <input type="number" id="maxPrice" placeholder="10" step="0.01" min="0.01" />
+    </div>
+    <div class="help">You will get a popup for every listing below this price</div>
   </div>
   <button id="addBtn">Add Term</button>
 </div>
-<div id="termLimitWarning" class="term-limit-warning">⚠️ You have reached the maximum of 30 terms. Remove some to add more.</div>
+<div id="termLimitWarning" class="term-limit-warning">You have reached the maximum of 30 terms. Remove some to add more.</div>
 </div>
 
 <!-- Tabs -->
 <div class="tabs">
   <button class="tab active" data-tab="terms">Terms</button>
-  <button class="tab" data-tab="bargains">Bargains <span id="bargainCount" class="badge" style="background:#e74c3c;color:#fff;padding:0 8px;margin-left:4px;">0</span></button>
+  <button class="tab" data-tab="bargains">Bargains <span id="bargainCount" class="badge" style="background:#dc2626;color:#fff;padding:0 8px;margin-left:4px;">0</span></button>
   <button class="tab" data-tab="workers">Workers</button>
   <button class="tab" data-tab="log">Log</button>
 </div>
@@ -794,9 +791,9 @@ const dismissPopup = document.getElementById('dismissPopup');
 const enablePushBtn = document.getElementById('enablePushBtn');
 const testPushBtn = document.getElementById('testPushBtn');
 const refreshPushBtn = document.getElementById('refreshPushBtn');
+const pushStatusDot = document.getElementById('pushStatusDot');
 const pushStatusText = document.getElementById('pushStatusText');
 const pushStatusBadge = document.getElementById('pushStatusBadge');
-const pushStatusIcon = document.getElementById('pushStatusIcon');
 const pushInstructions = document.getElementById('pushInstructions');
 const deviceInstructions = document.getElementById('deviceInstructions');
 
@@ -887,7 +884,7 @@ function initWebSocket() {
   ws.onclose = () => setTimeout(initWebSocket, 5000);
 }
 
-// ─── PUSH NOTIFICATIONS (rewritten for cross-browser support) ──────────
+// ─── PUSH NOTIFICATIONS (cross-browser) ─────────────────────────────────
 
 // The subscribe() API requires a Uint8Array key — a raw base64 string
 // makes subscribe() throw in Chrome/Firefox/Safari. This converts it.
@@ -906,18 +903,18 @@ function isStandalonePWA() {
 }
 
 function isPushSupported() {
-  if (!('serviceWorker' in navigator)) { setPushStatus('❌', 'Service Workers not supported', 'badge-push-off'); return false; }
-  if (!('PushManager' in window)) { setPushStatus('❌', 'Web Push not supported', 'badge-push-off'); return false; }
-  if (!('Notification' in window)) { setPushStatus('❌', 'Notifications not supported', 'badge-push-off'); return false; }
-  if (window.isSecureContext !== true) { setPushStatus('🔒', 'HTTPS (or localhost) is required for push', 'badge-push-off'); return false; }
+  if (!('serviceWorker' in navigator)) { setPushStatus('Service Workers not supported', 'off'); return false; }
+  if (!('PushManager' in window)) { setPushStatus('Web Push not supported', 'off'); return false; }
+  if (!('Notification' in window)) { setPushStatus('Notifications not supported', 'off'); return false; }
+  if (window.isSecureContext !== true) { setPushStatus('HTTPS (or localhost) is required for push', 'off'); return false; }
   return true;
 }
 
-function setPushStatus(icon, text, badgeClass) {
-  pushStatusIcon.textContent = icon;
+function setPushStatus(text, state) {
+  pushStatusDot.className = 'dot ' + (state === 'on' ? 'dot-on' : state === 'warn' ? 'dot-warn' : 'dot-off');
   pushStatusText.textContent = text;
-  pushStatusBadge.className = 'badge ' + badgeClass;
-  pushStatusBadge.textContent = text.includes('enabled') ? 'On' : 'Off';
+  pushStatusBadge.className = 'badge ' + (state === 'on' ? 'badge-push-on' : state === 'warn' ? 'badge-push-warn' : 'badge-push-off');
+  pushStatusBadge.textContent = state === 'on' ? 'On' : 'Off';
 }
 
 function showDeviceInstructions(force) {
@@ -925,13 +922,13 @@ function showDeviceInstructions(force) {
   const isAndroid = /Android/.test(navigator.userAgent);
   let msg = '';
   if (isIOS && !isStandalonePWA()) {
-    msg = '📱 <strong>iPhone / iPad:</strong> Web Push only works from an <strong>installed app</strong>. Tap the Share button (square with arrow) → <strong>"Add to Home Screen"</strong>, then open the app from your Home Screen and tap "Enable Notifications".';
+    msg = '<strong>iPhone / iPad:</strong> Web Push only works from an installed app. Tap the Share button (square with arrow), then select <strong>"Add to Home Screen"</strong>. Open the app from your home screen and tap "Enable Notifications".';
   } else if (isIOS) {
-    msg = '📱 <strong>iPhone / iPad:</strong> Tap "Enable Notifications", then tap <strong>"Allow"</strong> when the browser asks.';
+    msg = '<strong>iPhone / iPad:</strong> Tap "Enable Notifications", then tap <strong>"Allow"</strong> when the browser asks.';
   } else if (isAndroid) {
-    msg = '📱 <strong>Android:</strong> Tap "Enable Notifications", then tap <strong>"Allow"</strong> on the browser prompt.';
+    msg = '<strong>Android:</strong> Tap "Enable Notifications", then tap <strong>"Allow"</strong> on the browser prompt.';
   } else {
-    msg = '💻 <strong>Desktop:</strong> Tap "Enable Notifications" and then click <strong>"Allow"</strong> on the browser prompt.';
+    msg = '<strong>Desktop:</strong> Tap "Enable Notifications" and then click <strong>"Allow"</strong> on the browser prompt.';
   }
   deviceInstructions.innerHTML = msg;
   if (force || Notification.permission === 'denied' || Notification.permission === 'default') {
@@ -962,8 +959,8 @@ async function initPushNotifications() {
       const sub = await swRegistration.pushManager.getSubscription();
       if (sub) {
         pushSubscription = sub;
-        setPushStatus('✅', 'Notifications enabled', 'badge-push-on');
-        enablePushBtn.textContent = '✅ Enabled';
+        setPushStatus('Notifications enabled', 'on');
+        enablePushBtn.textContent = 'Enabled';
         enablePushBtn.disabled = true;
         testPushBtn.style.display = 'inline-block';
         // Re-sync with the server (covers server restarts / DB loss)
@@ -972,21 +969,21 @@ async function initPushNotifications() {
       }
     }
     if (perm === 'denied') {
-      setPushStatus('🚫', 'Notifications blocked in browser settings', 'badge-push-off');
+      setPushStatus('Notifications blocked in browser settings', 'warn');
       enablePushBtn.style.display = 'inline-block';
       enablePushBtn.disabled = true;
-      enablePushBtn.textContent = '🔔 Enable (blocked)';
+      enablePushBtn.textContent = 'Enable (blocked)';
       showDeviceInstructions(true);
       return;
     }
-    setPushStatus('🔔', 'Click enable to get alerts', 'badge-push-off');
+    setPushStatus('Click enable to get alerts', 'off');
     enablePushBtn.style.display = 'inline-block';
     enablePushBtn.disabled = false;
-    enablePushBtn.textContent = '🔔 Enable Notifications';
+    enablePushBtn.textContent = 'Enable Notifications';
     showDeviceInstructions(false);
   } catch (err) {
     console.error('Push init error:', err);
-    setPushStatus('⚠️', 'Error: ' + err.message, 'badge-push-off');
+    setPushStatus('Error: ' + err.message, 'warn');
   }
 }
 
@@ -1010,7 +1007,7 @@ async function onEnablePush() {
   }
   if (perm !== 'granted') {
     alert('Notification permission was denied. Enable it manually in your browser settings.');
-    setPushStatus('🚫', 'Notifications blocked in browser settings', 'badge-push-off');
+    setPushStatus('Notifications blocked in browser settings', 'warn');
     showDeviceInstructions(true);
     return;
   }
@@ -1039,8 +1036,8 @@ async function onEnablePush() {
 
     const res = await sendSubscriptionToServer(sub);
     if (res.ok) {
-      setPushStatus('✅', 'Notifications enabled', 'badge-push-on');
-      enablePushBtn.textContent = '✅ Enabled';
+      setPushStatus('Notifications enabled', 'on');
+      enablePushBtn.textContent = 'Enabled';
       enablePushBtn.disabled = true;
       testPushBtn.style.display = 'inline-block';
       refreshPushBtn.style.display = 'none';
@@ -1051,7 +1048,7 @@ async function onEnablePush() {
       try {
         const t = await authFetch(API_BASE + '/test-push', { method: 'POST' });
         const td = await t.json();
-        if (td.success) addLog('Test notification sent — check for the popup', 'success');
+        if (td.success) addLog('Test notification sent - check for the popup', 'success');
       } catch (_) {}
     } else {
       const errData = await res.json();
@@ -1071,7 +1068,7 @@ async function onEnablePush() {
 testPushBtn.addEventListener('click', async () => {
   if (!userId) return;
   testPushBtn.disabled = true;
-  testPushBtn.textContent = 'Sending…';
+  testPushBtn.textContent = 'Sending...';
   try {
     const res = await authFetch(API_BASE + '/test-push', { method: 'POST' });
     const data = await res.json();
@@ -1085,7 +1082,7 @@ testPushBtn.addEventListener('click', async () => {
     alert('Network error while sending test notification.');
   }
   testPushBtn.disabled = false;
-  testPushBtn.textContent = '🔔 Test';
+  testPushBtn.textContent = 'Test';
 });
 
 // ─── Rendering functions ───────────────────────────────────────────────
@@ -1106,19 +1103,25 @@ function renderAll(data) {
 
   // Keep push status in sync with the server
   if (data.pushEnabled) {
-    setPushStatus('✅', 'Notifications enabled', 'badge-push-on');
-    enablePushBtn.textContent = '✅ Enabled';
+    setPushStatus('Notifications enabled', 'on');
+    enablePushBtn.textContent = 'Enabled';
     enablePushBtn.disabled = true;
     testPushBtn.style.display = 'inline-block';
   } else if (pushSubscription) {
     // We have a local subscription but the server lost it (expired/restart)
-    setPushStatus('⚠️', 'Re-enable notifications', 'badge-push-off');
+    setPushStatus('Re-enable notifications', 'warn');
     enablePushBtn.style.display = 'inline-block';
     enablePushBtn.disabled = false;
-    enablePushBtn.textContent = '🔔 Re-enable';
+    enablePushBtn.textContent = 'Re-enable';
     testPushBtn.style.display = 'none';
     refreshPushBtn.style.display = 'inline-block';
   }
+}
+
+function formatPrice(v) {
+  const n = parseFloat(v);
+  if (isNaN(n) || n <= 0) return 'Not set';
+  return '£' + n.toFixed(2);
 }
 
 function renderTerms(terms) {
@@ -1129,21 +1132,19 @@ function renderTerms(terms) {
   }
 
   // ── Desktop table ──
-  let tableHtml = '<div class="table-wrap"><table class="terms-table"><thead><tr><th>Term</th><th>Avg Price</th><th>Deal %</th><th>Interval</th><th>Status</th><th>Listings</th><th>Bargains</th><th>Actions</th></tr></thead><tbody>';
+  let tableHtml = '<div class="table-wrap"><table class="terms-table"><thead><tr><th>Term</th><th>Max Price</th><th>Status</th><th>Listings</th><th>Bargains</th><th>Actions</th></tr></thead><tbody>';
   terms.forEach(t => {
     const status = t.active ? '<span class="badge badge-active">Scanning</span>' : '<span class="badge badge-idle">Idle</span>';
-    const avgDisplay = t.averagePrice ? '£' + t.averagePrice : 'Not set';
+    const maxDisplay = formatPrice(t.maxPrice);
     let scanBtn = '';
-    if (t.averagePrice) {
-      if (t.scanning) {
-        scanBtn = '<button class="danger" data-action="stop" data-term="' + t.term + '">Stop</button>';
-      } else {
-        scanBtn = '<button class="success" data-action="scan" data-term="' + t.term + '">Scan</button>';
-      }
+    if (!t.maxPrice) {
+      scanBtn = '<button class="secondary" data-action="setprice" data-term="' + t.term + '">Set Price</button>';
+    } else if (t.scanning) {
+      scanBtn = '<button class="danger" data-action="stop" data-term="' + t.term + '">Stop</button>';
     } else {
-      scanBtn = '<button class="secondary" data-action="avg" data-term="' + t.term + '">Calc Avg</button>';
+      scanBtn = '<button class="success" data-action="scan" data-term="' + t.term + '">Scan</button>';
     }
-    tableHtml += '<tr><td><strong>' + t.term + '</strong></td><td>' + avgDisplay + '</td><td>' + t.thresholdPercent + '%</td><td>' + t.interval + ' min</td><td>' + status + '</td><td>' + (t.listingCount || 0) + '</td><td>' + (t.bargainCount || 0) + '</td><td class="actions">' + scanBtn + '<button class="danger" data-action="remove" data-term="' + t.term + '">✕</button></td></tr>';
+    tableHtml += '<tr><td><strong>' + t.term + '</strong></td><td>' + maxDisplay + '</td><td>' + status + '</td><td>' + (t.listingCount || 0) + '</td><td>' + (t.bargainCount || 0) + '</td><td class="actions">' + scanBtn + '<button class="danger" data-action="remove" data-term="' + t.term + '">Remove</button></td></tr>';
   });
   tableHtml += '</tbody></table></div>';
 
@@ -1151,22 +1152,18 @@ function renderTerms(terms) {
   let cardHtml = '';
   terms.forEach(t => {
     const status = t.active ? '<span class="badge badge-active">Scanning</span>' : '<span class="badge badge-idle">Idle</span>';
-    const avgDisplay = t.averagePrice ? '£' + t.averagePrice : 'Not set';
+    const maxDisplay = formatPrice(t.maxPrice);
     let scanBtn = '';
-    if (t.averagePrice) {
-      if (t.scanning) {
-        scanBtn = '<button class="danger" data-action="stop" data-term="' + t.term + '">Stop</button>';
-      } else {
-        scanBtn = '<button class="success" data-action="scan" data-term="' + t.term + '">Scan</button>';
-      }
+    if (!t.maxPrice) {
+      scanBtn = '<button class="secondary" data-action="setprice" data-term="' + t.term + '">Set Price</button>';
+    } else if (t.scanning) {
+      scanBtn = '<button class="danger" data-action="stop" data-term="' + t.term + '">Stop</button>';
     } else {
-      scanBtn = '<button class="secondary" data-action="avg" data-term="' + t.term + '">Calc Avg</button>';
+      scanBtn = '<button class="success" data-action="scan" data-term="' + t.term + '">Scan</button>';
     }
     cardHtml += '<div class="term-card" data-term="' + t.term + '">';
     cardHtml += '<div class="row"><span class="label">Term</span><span class="value"><strong>' + t.term + '</strong></span></div>';
-    cardHtml += '<div class="row"><span class="label">Avg Price</span><span class="value">' + avgDisplay + '</span></div>';
-    cardHtml += '<div class="row"><span class="label">Deal %</span><span class="value">' + t.thresholdPercent + '%</span></div>';
-    cardHtml += '<div class="row"><span class="label">Interval</span><span class="value">' + t.interval + ' min</span></div>';
+    cardHtml += '<div class="row"><span class="label">Max Price</span><span class="value">' + maxDisplay + '</span></div>';
     cardHtml += '<div class="row"><span class="label">Status</span><span class="value">' + status + '</span></div>';
     cardHtml += '<div class="row"><span class="label">Listings</span><span class="value">' + (t.listingCount || 0) + '</span></div>';
     cardHtml += '<div class="row"><span class="label">Bargains</span><span class="value">' + (t.bargainCount || 0) + '</span></div>';
@@ -1190,20 +1187,24 @@ function renderTerms(terms) {
       }
     });
   });
-  container.querySelectorAll('[data-action="avg"]').forEach(btn => {
+  container.querySelectorAll('[data-action="setprice"]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const term = btn.dataset.term;
-      const res = await authFetch(API_BASE + '/calculate-average', {
+      const input = prompt('Enter maximum price (£) for "' + term + '":', '10');
+      if (input === null) return;
+      const maxPrice = parseFloat(input);
+      if (isNaN(maxPrice) || maxPrice <= 0) { alert('Enter a valid price above 0.'); return; }
+      const res = await authFetch(API_BASE + '/set-price', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ term })
+        body: JSON.stringify({ term, maxPrice })
       });
       const data = await res.json();
       if (res.ok) {
-        addLog('Average calculation started for "' + term + '"', 'info');
+        addLog('Price limit set for "' + term + '" to £' + maxPrice.toFixed(2), 'success');
         fetchData();
       } else {
-        alert(data.error || 'Failed to start calculation');
+        alert(data.error || 'Failed to set price');
       }
     });
   });
@@ -1269,7 +1270,7 @@ function renderBargains(b) {
       has = true;
       html += '<h4>' + term + ' <span class="badge badge-bargain">' + items.length + ' bargains</span></h4>';
       items.slice(0, 20).forEach(item => {
-        html += '<div class="bargain-item"><strong>' + item.name + '</strong><div class="meta"><span>Price: ' + item.price + '</span><span>Discount: ' + item.discount + '%</span><span>Size: ' + (item.size || 'N/A') + '</span><span>Condition: ' + (item.condition || 'N/A') + '</span><a href="' + item.link + '" target="_blank">View</a></div></div>';
+        html += '<div class="bargain-item"><strong>' + item.name + '</strong><div class="meta"><span>Price: ' + item.price + '</span><span>Limit: ' + formatPrice(item.maxPrice) + '</span><span>Below limit: ' + item.discount + '%</span><span>Size: ' + (item.size || 'N/A') + '</span><span>Condition: ' + (item.condition || 'N/A') + '</span><a href="' + item.link + '" target="_blank">View</a></div></div>';
       });
       if (items.length > 20) html += '<p>... and ' + (items.length - 20) + ' more</p>';
     }
@@ -1302,22 +1303,25 @@ async function fetchData() {
 // ─── Event listeners ──────────────────────────────────────────────────
 document.getElementById('addBtn').addEventListener('click', async () => {
   const termInput = document.getElementById('newTerm');
-  const thresholdInput = document.getElementById('threshold');
-  const intervalSelect = document.getElementById('interval');
+  const maxPriceInput = document.getElementById('maxPrice');
   const term = termInput.value.trim();
-  const threshold = parseInt(thresholdInput.value) || 20;
-  const interval = parseInt(intervalSelect.value) || 5;
+  const maxPrice = parseFloat(maxPriceInput.value);
   if (!term) return;
+  if (isNaN(maxPrice) || maxPrice <= 0) {
+    alert('Enter a maximum price above 0.');
+    return;
+  }
   try {
     const res = await authFetch(API_BASE + '/terms', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ term, thresholdPercent: threshold, interval })
+      body: JSON.stringify({ term, maxPrice })
     });
     const data = await res.json();
     if (res.ok) {
-      addLog('Added term: "' + term + '"', 'success');
+      addLog('Added term: "' + term + '" with price limit £' + maxPrice.toFixed(2), 'success');
       termInput.value = '';
+      maxPriceInput.value = '';
       fetchData();
     } else {
       alert(data.error || 'Failed to add term');
@@ -1445,8 +1449,8 @@ app.post('/test-push', (req, res) => {
     return res.status(400).json({ error: 'No push subscription found. Enable notifications first.' });
   }
   const payload = JSON.stringify({
-    title: '🔔 Test notification',
-    body: 'Push notifications are working! You will now get a popup for every bargain.',
+    title: 'Test notification',
+    body: 'Push notifications are working. You will now get a popup for every bargain below your price limit.',
     icon: ICON_URL,
     badge: ICON_URL,
     url: '/',
@@ -1466,8 +1470,12 @@ app.post('/test-push', (req, res) => {
 // POST /terms
 app.post('/terms', (req, res) => {
   const userId = req.userId;
-  const { term, thresholdPercent = 20, interval = 5 } = req.body;
+  const { term, maxPrice } = req.body;
   if (!term) return res.status(400).json({ error: 'Missing term' });
+  const parsedMax = parseFloat(maxPrice);
+  if (isNaN(parsedMax) || parsedMax <= 0) {
+    return res.status(400).json({ error: 'Enter a maximum price above 0' });
+  }
   const userData = getUserData(userId);
   if (!hasMembership(userId)) {
     return res.status(403).json({ error: 'No active membership. Please upgrade.' });
@@ -1478,13 +1486,28 @@ app.post('/terms', (req, res) => {
   if (userData.terms.find(t => t.term === term)) {
     return res.status(409).json({ error: 'Term already exists' });
   }
-  const obj = { term, averagePrice: null, thresholdPercent: parseInt(thresholdPercent), interval: parseInt(interval), scanning: false };
+  const obj = { term, maxPrice: parsedMax, scanning: false };
   userData.terms.push(obj);
   saveUserTerms(userId, userData.terms);
   broadcastUpdate(userId);
-  res.json({
-    success: true, term: obj
-  });
+  res.json({ success: true, term: obj });
+});
+
+// POST /set-price — change the maximum price of an existing term
+app.post('/set-price', (req, res) => {
+  const userId = req.userId;
+  const { term, maxPrice } = req.body;
+  const userData = getUserData(userId);
+  const termObj = userData.terms.find(t => t.term === term);
+  if (!termObj) return res.status(404).json({ error: 'Term not found' });
+  const parsedMax = parseFloat(maxPrice);
+  if (isNaN(parsedMax) || parsedMax <= 0) {
+    return res.status(400).json({ error: 'Enter a maximum price above 0' });
+  }
+  termObj.maxPrice = parsedMax;
+  saveUserTerms(userId, userData.terms);
+  broadcastUpdate(userId);
+  res.json({ success: true, maxPrice: parsedMax });
 });
 
 // DELETE /terms/:term
@@ -1503,21 +1526,6 @@ app.delete('/terms/:term', (req, res) => {
   res.json({ success: true });
 });
 
-// POST /calculate-average
-app.post('/calculate-average', (req, res) => {
-  const userId = req.userId;
-  const { term } = req.body;
-  if (!term) return res.status(400).json({ error: 'Missing term' });
-  const userData = getUserData(userId);
-  const termObj = userData.terms.find(t => t.term === term);
-  if (!termObj) return res.status(404).json({ error: 'Term not found' });
-  if (!hasMembership(userId)) {
-    return res.status(403).json({ error: 'No active membership.' });
-  }
-  queueJob(userId, term, 'scan_all');
-  res.json({ success: true });
-});
-
 // POST /start-scan
 app.post('/start-scan', (req, res) => {
   const userId = req.userId;
@@ -1526,8 +1534,8 @@ app.post('/start-scan', (req, res) => {
   const userData = getUserData(userId);
   const termObj = userData.terms.find(t => t.term === term);
   if (!termObj) return res.status(404).json({ error: 'Term not found' });
-  if (!termObj.averagePrice) {
-    return res.status(400).json({ error: 'Average price not set. Please calculate average first.' });
+  if (!termObj.maxPrice) {
+    return res.status(400).json({ error: 'Set a maximum price first to enable scanning.' });
   }
   if (!hasMembership(userId)) {
     return res.status(403).json({ error: 'No active membership.' });
@@ -1608,7 +1616,7 @@ wss.on('connection', (ws, req) => {
           processQueue();
           break;
         case 'job-complete': {
-          const { term, listings, jobId, jobType } = data;
+          const { term, listings, jobId } = data;
           if (!term || !listings) break;
           let job = null;
           let jobKey = null;
@@ -1624,8 +1632,8 @@ wss.on('connection', (ws, req) => {
             break;
           }
           const uid = job.userId;
-          console.log('Job complete for "' + term + '" (' + (jobType || 'scan_new') + ') from ' + clientId + ' for user ' + uid);
-          const result = processScrapedListings(uid, term, listings, jobType || 'scan_new');
+          console.log('Job complete for "' + term + '" from ' + clientId + ' for user ' + uid);
+          const result = processScrapedListings(uid, term, listings);
           if (clientId && clients.has(clientId)) {
             clients.get(clientId).busy = false;
           }
@@ -1656,7 +1664,7 @@ wss.on('connection', (ws, req) => {
           }
           if (job) {
             const uid = job.userId;
-            console.log('Job failed for "' + term + '" (' + (jobType || 'scan_new') + ') from ' + clientId + ' for user ' + uid + ': ' + error);
+            console.log('Job failed for "' + term + '" from ' + clientId + ' for user ' + uid + ': ' + error);
             if (clientId && clients.has(clientId)) {
               clients.get(clientId).busy = false;
             }
@@ -1735,7 +1743,7 @@ setInterval(() => {
   }
 }, 10000);
 
-// ─── Scheduler ──────────────────────────────────────────────────────────
+// ─── Scheduler (fixed 3-minute scan frequency) ──────────────────────────
 setInterval(() => {
   for (const [userId, session] of sessions) {
     if (!hasMembership(userId)) continue;
@@ -1744,7 +1752,6 @@ setInterval(() => {
     for (const termObj of userData.terms) {
       if (!termObj.scanning) continue;
       const term = termObj.term;
-      const interval = termObj.interval || 5;
       const active = Array.from(activeJobs.values()).some(j => j.userId === userId && j.term === term && j.type === 'scan_new');
       const queued = jobQueue.some(j => j.userId === userId && j.term === term && j.type === 'scan_new');
       if (!active && !queued) {
@@ -1752,7 +1759,7 @@ setInterval(() => {
         if (history.length > 0) {
           const last = new Date(history[0]?.firstSeen || 0);
           const mins = (Date.now() - last.getTime()) / 60000;
-          if (mins >= interval) {
+          if (mins >= SCAN_INTERVAL_MINUTES) {
             jobQueue.push({ userId, term, type: 'scan_new' });
             console.log('Scheduling scan_new for "' + term + '" (user ' + userId + ') (last ' + Math.round(mins) + 'm ago)');
           }
