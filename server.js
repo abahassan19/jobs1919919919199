@@ -12,27 +12,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// ─── VAPID keys (for web push) ───────────────────────────────────────
-// Set these in your environment variables for persistence.
-// If not set, the server will generate them on first run and log them.
-let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
-let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
-
-if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
-  const vapidKeys = webpush.generateVAPIDKeys();
-  VAPID_PUBLIC_KEY = vapidKeys.publicKey;
-  VAPID_PRIVATE_KEY = vapidKeys.privateKey;
-  console.log('\n⚠️  VAPID keys generated (set these as env vars for persistence):');
-  console.log(`VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}`);
-  console.log(`VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}\n`);
-}
-
-webpush.setVapidDetails(
-  'mailto:admin@vintedmonitor.com', // replace with your email
-  VAPID_PUBLIC_KEY,
-  VAPID_PRIVATE_KEY
-);
-
 // ─── Server config ────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 const BASE_DIR = process.env.RENDER_PERSISTENT_DISK || __dirname;
@@ -42,15 +21,61 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 console.log(`Data directory: ${DATA_DIR}`);
 console.log(`Persistent storage: ${process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'}`);
 
+// ─── VAPID keys — PERSISTED so push keeps working across restarts ────
+// Priority: env vars → saved file → generate & save to disk.
+// If you don't set env vars, the keys are saved to userdata/vapid-keys.json
+// so subscriptions survive restarts (on ephemeral disks they still won't
+// survive a redeploy — set the env vars for that).
+const VAPID_FILE = path.join(DATA_DIR, 'vapid-keys.json');
+let VAPID_PUBLIC_KEY;
+let VAPID_PRIVATE_KEY;
+
+(function initVapid() {
+  if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+    VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
+    VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
+    console.log('VAPID keys loaded from environment variables.');
+    return;
+  }
+  try {
+    if (fs.existsSync(VAPID_FILE)) {
+      const saved = JSON.parse(fs.readFileSync(VAPID_FILE, 'utf8'));
+      if (saved.publicKey && saved.privateKey) {
+        VAPID_PUBLIC_KEY = saved.publicKey;
+        VAPID_PRIVATE_KEY = saved.privateKey;
+        console.log('VAPID keys loaded from ' + VAPID_FILE);
+        return;
+      }
+    }
+  } catch (_) {}
+  const keys = webpush.generateVAPIDKeys();
+  VAPID_PUBLIC_KEY = keys.publicKey;
+  VAPID_PRIVATE_KEY = keys.privateKey;
+  try {
+    fs.writeFileSync(VAPID_FILE, JSON.stringify(keys, null, 2), 'utf8');
+    console.log('Generated new VAPID keys and persisted to ' + VAPID_FILE);
+  } catch (err) {
+    console.log('Could not persist VAPID keys to disk: ' + err.message);
+  }
+  console.log('Set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY env vars to keep keys stable across deploys.');
+})();
+
+webpush.setVapidDetails(
+  'mailto:admin@vintedmonitor.com', // change to your email
+  VAPID_PUBLIC_KEY,
+  VAPID_PRIVATE_KEY
+);
+
+const ICON_URL = 'https://cdn-icons-png.flaticon.com/512/2331/2331966.png';
+
 // ─── Constants ──────────────────────────────────────────────────────────
 const MAX_TERMS = 30;
 const MEMBERSHIP_SYNC_INTERVAL = 60000; // 1 minute
 
-// ─── In‑memory state ──────────────────────────────────────────────────
+// ─── In-memory state ──────────────────────────────────────────────────
 const sessions = new Map();           // userId -> { lastActive, membership }
 const userCache = new Map();          // userId -> { terms, bargains, notified }
 const pushSubscriptions = new Map();  // userId -> [ { endpoint, keys } ]
-const NOTIFIED_TRACK_FILE = 'notified.json';
 
 // ─── Global job queue and workers ──────────────────────────────────
 let jobQueue = [];
@@ -77,7 +102,7 @@ function getSubscriptionsFile(userId) {
   return path.join(getUserDir(userId), 'push-subs.json');
 }
 function getNotifiedFile(userId) {
-  return path.join(getUserDir(userId), NOTIFIED_TRACK_FILE);
+  return path.join(getUserDir(userId), 'notified.json');
 }
 function ensureUserDir(userId) {
   const dir = getUserDir(userId);
@@ -231,20 +256,18 @@ function processScrapedListings(userId, term, scraped, jobType) {
   if (termObj.averagePrice) {
     const analysis = analyzePrices(updated, termObj.averagePrice, termObj.thresholdPercent);
     if (analysis.bargains.length > 0) {
-      // Check for truly new bargains (not notified yet)
       const notified = userData.notified[term] || [];
       const notifiedSet = new Set(notified);
       const freshBargains = analysis.bargains.filter(b => !notifiedSet.has(b.link));
-      
+
       if (freshBargains.length > 0) {
-        // Store them as notified
         const newNotified = [...notified, ...freshBargains.map(b => b.link)];
         userData.notified[term] = newNotified;
         saveNotified(userId, userData.notified);
-        
+
         userData.bargains[term] = freshBargains;
         broadcastBargains(userId, term, freshBargains);
-        // Also send push notifications for fresh bargains
+        // One push popup PER bargain — this is what triggers the notification
         sendPushNotifications(userId, term, freshBargains);
       }
     }
@@ -253,37 +276,52 @@ function processScrapedListings(userId, term, scraped, jobType) {
 }
 
 // ─── Push notification sender ──────────────────────────────────────────
+function handlePushError(userId, sub, err) {
+  const code = err.statusCode;
+  // 404/410 = subscription expired, 401/403 = VAPID keys changed/invalid.
+  // In all cases the stored subscription is useless — drop it so the
+  // client is told to re-enable (status shows pushEnabled = false).
+  if (code === 404 || code === 410 || code === 401 || code === 403) {
+    console.log(`Removing stale push subscription for ${userId} (status ${code})`);
+    let subs = loadPushSubscriptions(userId);
+    const before = subs.length;
+    subs = subs.filter(s => s.endpoint !== sub.endpoint);
+    if (subs.length !== before) {
+      savePushSubscriptions(userId, subs);
+      broadcastUpdate(userId);
+    }
+  } else {
+    console.error(`Push send failed for ${userId}:`, code || err.message, err.body || '');
+  }
+}
+
 function sendPushNotifications(userId, term, bargainsList) {
   const subs = loadPushSubscriptions(userId);
   if (!subs || subs.length === 0) return;
 
-  // Build a payload (keep it small)
-  const first = bargainsList[0];
-  const total = bargainsList.length;
-  const title = `💰 Bargain alert! ${total} item${total > 1 ? 's' : ''} for "${term}"`;
-  const body = total === 1 
-    ? `${first.name} — ${first.price} (${first.discount}% off)`
-    : `Check your dashboard for ${total} new bargains.`;
-  const payload = JSON.stringify({
-    title,
-    body,
-    icon: 'https://cdn-icons-png.flaticon.com/512/2331/2331966.png', // generic sale icon
-    badge: 'https://cdn-icons-png.flaticon.com/512/2331/2331966.png',
-    url: '/',
-    data: { term }
-  });
+  console.log(`Sending ${bargainsList.length} push notification(s) for "${term}" to user ${userId} (${subs.length} device(s))`);
 
-  // Send to each subscription
-  for (const sub of subs) {
-    webpush.sendNotification(sub, payload)
-      .catch(err => {
-        console.error(`Push failed for ${userId}:`, err.statusCode, err.body);
-        if (err.statusCode === 410 || err.statusCode === 404) {
-          // Subscription expired – remove it
-          const newSubs = subs.filter(s => s.endpoint !== sub.endpoint);
-          savePushSubscriptions(userId, newSubs);
-        }
-      });
+  // One notification per bargain so the user gets a popup for every deal.
+  for (const item of bargainsList) {
+    const name = (item.name || 'New bargain').substring(0, 60);
+    const title = `${item.price} · ${name}`;
+    const parts = [`${item.discount}% below average`];
+    if (item.size) parts.push(`Size ${item.size}`);
+    if (item.condition) parts.push(item.condition);
+    const body = parts.join(' · ');
+
+    const payload = JSON.stringify({
+      title,
+      body,
+      icon: ICON_URL,
+      badge: ICON_URL,
+      url: item.link || '/',
+      data: { term }
+    });
+
+    for (const sub of subs) {
+      webpush.sendNotification(sub, payload).catch(err => handlePushError(userId, sub, err));
+    }
   }
 }
 
@@ -435,13 +473,12 @@ app.use(express.json());
 
 // ─── Serve Service Worker ──────────────────────────────────────────────
 const SW_SCRIPT = `
-// Service Worker for Vinted Price Monitor
-self.addEventListener('push', function(event) {
+self.addEventListener('push', function (event) {
   let data = {};
   try {
     data = event.data.json();
   } catch (e) {
-    data = { title: 'Bargain Alert', body: 'New bargain found!', url: '/' };
+    data = { title: 'Bargain Alert', body: 'A new bargain was found!', url: '/' };
   }
   const options = {
     body: data.body || 'Check your dashboard!',
@@ -451,21 +488,25 @@ self.addEventListener('push', function(event) {
     vibrate: [200, 100, 200],
     requireInteraction: true
   };
-  event.waitUntil(
-    self.registration.showNotification(data.title || 'Vinted Monitor', options)
-  );
+  event.waitUntil(self.registration.showNotification(data.title || 'Vinted Monitor', options));
 });
 
-self.addEventListener('notificationclick', function(event) {
+self.addEventListener('notificationclick', function (event) {
   event.notification.close();
-  event.waitUntil(
-    clients.openWindow(event.notification.data || '/')
-  );
+  const url = event.notification.data || '/';
+  event.waitUntil((async function () {
+    const allClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of allClients) {
+      if ('focus' in client) { await client.focus(); return; }
+    }
+    if (clients.openWindow) { await clients.openWindow(url); }
+  })());
 });
 `;
 app.get('/sw.js', (req, res) => {
   res.setHeader('Content-Type', 'application/javascript');
   res.setHeader('Service-Worker-Allowed', '/');
+  res.setHeader('Cache-Control', 'no-cache');
   res.send(SW_SCRIPT);
 });
 
@@ -658,6 +699,7 @@ button:disabled{opacity:0.6;cursor:not-allowed}
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:8px;">
       <button id="enablePushBtn" class="success">🔔 Enable Notifications</button>
+      <button id="testPushBtn" class="success" style="display:none;">🔔 Test</button>
       <button id="refreshPushBtn" class="secondary" style="display:none;">🔄 Refresh</button>
     </div>
   </div>
@@ -730,7 +772,7 @@ button:disabled{opacity:0.6;cursor:not-allowed}
 </div>
 
 <script>
-// ─── VAPID public key ────────────────────────────────────────────────
+// ─── VAPID public key (base64url, must be converted to Uint8Array) ────
 const VAPID_PUBLIC_KEY = '${VAPID_PUBLIC_KEY}';
 
 let userId = null;
@@ -750,6 +792,7 @@ const termLimitWarning = document.getElementById('termLimitWarning');
 const passwordPopup = document.getElementById('passwordPopup');
 const dismissPopup = document.getElementById('dismissPopup');
 const enablePushBtn = document.getElementById('enablePushBtn');
+const testPushBtn = document.getElementById('testPushBtn');
 const refreshPushBtn = document.getElementById('refreshPushBtn');
 const pushStatusText = document.getElementById('pushStatusText');
 const pushStatusBadge = document.getElementById('pushStatusBadge');
@@ -810,6 +853,7 @@ function logout() {
   if (ws) ws.close();
   if (pushSubscription) {
     pushSubscription.unsubscribe().catch(console.error);
+    pushSubscription = null;
   }
 }
 
@@ -843,13 +887,71 @@ function initWebSocket() {
   ws.onclose = () => setTimeout(initWebSocket, 5000);
 }
 
-// ─── Push Notifications ────────────────────────────────────────────────
-async function initPushNotifications() {
-  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
-    setPushStatus('❌', 'Not supported in this browser', 'badge-push-off');
-    enablePushBtn.style.display = 'none';
-    return;
+// ─── PUSH NOTIFICATIONS (rewritten for cross-browser support) ──────────
+
+// The subscribe() API requires a Uint8Array key — a raw base64 string
+// makes subscribe() throw in Chrome/Firefox/Safari. This converts it.
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+// iOS only allows Web Push from an installed PWA (Add to Home Screen).
+function isStandalonePWA() {
+  return window.matchMedia('(display-mode: standalone)').matches || (navigator.standalone === true);
+}
+
+function isPushSupported() {
+  if (!('serviceWorker' in navigator)) { setPushStatus('❌', 'Service Workers not supported', 'badge-push-off'); return false; }
+  if (!('PushManager' in window)) { setPushStatus('❌', 'Web Push not supported', 'badge-push-off'); return false; }
+  if (!('Notification' in window)) { setPushStatus('❌', 'Notifications not supported', 'badge-push-off'); return false; }
+  if (window.isSecureContext !== true) { setPushStatus('🔒', 'HTTPS (or localhost) is required for push', 'badge-push-off'); return false; }
+  return true;
+}
+
+function setPushStatus(icon, text, badgeClass) {
+  pushStatusIcon.textContent = icon;
+  pushStatusText.textContent = text;
+  pushStatusBadge.className = 'badge ' + badgeClass;
+  pushStatusBadge.textContent = text.includes('enabled') ? 'On' : 'Off';
+}
+
+function showDeviceInstructions(force) {
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/.test(navigator.userAgent);
+  let msg = '';
+  if (isIOS && !isStandalonePWA()) {
+    msg = '📱 <strong>iPhone / iPad:</strong> Web Push only works from an <strong>installed app</strong>. Tap the Share button (square with arrow) → <strong>"Add to Home Screen"</strong>, then open the app from your Home Screen and tap "Enable Notifications".';
+  } else if (isIOS) {
+    msg = '📱 <strong>iPhone / iPad:</strong> Tap "Enable Notifications", then tap <strong>"Allow"</strong> when the browser asks.';
+  } else if (isAndroid) {
+    msg = '📱 <strong>Android:</strong> Tap "Enable Notifications", then tap <strong>"Allow"</strong> on the browser prompt.';
+  } else {
+    msg = '💻 <strong>Desktop:</strong> Tap "Enable Notifications" and then click <strong>"Allow"</strong> on the browser prompt.';
   }
+  deviceInstructions.innerHTML = msg;
+  if (force || Notification.permission === 'denied' || Notification.permission === 'default') {
+    pushInstructions.classList.add('show');
+  } else {
+    pushInstructions.classList.remove('show');
+  }
+}
+
+async function sendSubscriptionToServer(sub) {
+  const res = await authFetch(API_BASE + '/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(sub)
+  });
+  return res;
+}
+
+async function initPushNotifications() {
+  if (!isPushSupported()) { enablePushBtn.style.display = 'none'; return; }
 
   try {
     swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
@@ -863,100 +965,128 @@ async function initPushNotifications() {
         setPushStatus('✅', 'Notifications enabled', 'badge-push-on');
         enablePushBtn.textContent = '✅ Enabled';
         enablePushBtn.disabled = true;
+        testPushBtn.style.display = 'inline-block';
+        // Re-sync with the server (covers server restarts / DB loss)
         await sendSubscriptionToServer(sub);
         return;
-      } else {
-        setPushStatus('🔔', 'Click enable to get alerts', 'badge-push-off');
-        enablePushBtn.style.display = 'inline-block';
       }
-    } else if (perm === 'denied') {
-      setPushStatus('🚫', 'Notifications blocked by browser', 'badge-push-off');
-      enablePushBtn.style.display = 'none';
+    }
+    if (perm === 'denied') {
+      setPushStatus('🚫', 'Notifications blocked in browser settings', 'badge-push-off');
+      enablePushBtn.style.display = 'inline-block';
+      enablePushBtn.disabled = true;
+      enablePushBtn.textContent = '🔔 Enable (blocked)';
       showDeviceInstructions(true);
       return;
-    } else {
-      setPushStatus('🔔', 'Click enable to get alerts', 'badge-push-off');
-      enablePushBtn.style.display = 'inline-block';
     }
+    setPushStatus('🔔', 'Click enable to get alerts', 'badge-push-off');
+    enablePushBtn.style.display = 'inline-block';
+    enablePushBtn.disabled = false;
+    enablePushBtn.textContent = '🔔 Enable Notifications';
+    showDeviceInstructions(false);
   } catch (err) {
     console.error('Push init error:', err);
     setPushStatus('⚠️', 'Error: ' + err.message, 'badge-push-off');
   }
 }
 
-function setPushStatus(icon, text, badgeClass) {
-  pushStatusIcon.textContent = icon;
-  pushStatusText.textContent = text;
-  pushStatusBadge.className = 'badge ' + badgeClass;
-  pushStatusBadge.textContent = text.includes('enabled') ? 'On' : 'Off';
-}
+enablePushBtn.addEventListener('click', onEnablePush);
+refreshPushBtn.addEventListener('click', onEnablePush);
 
-function showDeviceInstructions(force = false) {
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const isAndroid = /Android/.test(navigator.userAgent);
-  let msg = '';
-  if (isIOS) {
-    msg = '📱 <strong>iPhone / iPad:</strong> Tap the Share button (square with arrow), then select <strong>"Add to Home Screen"</strong>. Open the app from your home screen, then tap "Enable Notifications".';
-  } else if (isAndroid) {
-    msg = '📱 <strong>Android:</strong> Tap "Enable Notifications" and then tap <strong>"Allow"</strong> on the browser prompt.';
-  } else {
-    msg = '💻 <strong>Desktop:</strong> Tap "Enable Notifications" and then click <strong>"Allow"</strong> on the browser prompt.';
-  }
-  deviceInstructions.innerHTML = msg;
-  if (force || Notification.permission === 'denied' || Notification.permission === 'default') {
-    pushInstructions.classList.add('show');
-  } else {
-    pushInstructions.classList.remove('show');
-  }
-}
-
-enablePushBtn.addEventListener('click', async () => {
+async function onEnablePush() {
   if (!userId) return;
-  if (!swRegistration) {
+  if (!isPushSupported()) return;
+
+  // 1) Ask permission FIRST — must stay inside the click gesture or
+  //    Safari/Chrome may silently refuse to show the prompt.
+  let perm = Notification.permission;
+  if (perm === 'default') {
     try {
-      swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+      perm = await Notification.requestPermission();
     } catch (e) {
-      alert('Service Worker registration failed. Please reload.');
+      alert('Could not request permission: ' + e.message);
       return;
     }
   }
-
-  let perm = Notification.permission;
-  if (perm === 'default') {
-    perm = await Notification.requestPermission();
-  }
   if (perm !== 'granted') {
-    alert('Permission denied. You can enable it manually in browser settings.');
+    alert('Notification permission was denied. Enable it manually in your browser settings.');
+    setPushStatus('🚫', 'Notifications blocked in browser settings', 'badge-push-off');
     showDeviceInstructions(true);
     return;
   }
 
+  // 2) Register the service worker (if not already registered)
+  if (!swRegistration) {
+    try {
+      swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    } catch (e) {
+      alert('Service Worker registration failed: ' + e.message);
+      return;
+    }
+  }
+
+  // 3) Get existing subscription or create a new one.
+  //    applicationServerKey MUST be a Uint8Array (not the base64 string).
   try {
-    const sub = await swRegistration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: VAPID_PUBLIC_KEY
-    });
+    let sub = await swRegistration.pushManager.getSubscription();
+    if (!sub) {
+      sub = await swRegistration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+      });
+    }
     pushSubscription = sub;
-    await sendSubscriptionToServer(sub);
-    setPushStatus('✅', 'Notifications enabled!', 'badge-push-on');
-    enablePushBtn.textContent = '✅ Enabled';
-    enablePushBtn.disabled = true;
-    pushInstructions.classList.remove('show');
-    addLog('Push notifications enabled', 'success');
+
+    const res = await sendSubscriptionToServer(sub);
+    if (res.ok) {
+      setPushStatus('✅', 'Notifications enabled', 'badge-push-on');
+      enablePushBtn.textContent = '✅ Enabled';
+      enablePushBtn.disabled = true;
+      testPushBtn.style.display = 'inline-block';
+      refreshPushBtn.style.display = 'none';
+      pushInstructions.classList.remove('show');
+      addLog('Push notifications enabled', 'success');
+
+      // Immediately send a test popup so the user sees it works right away
+      try {
+        const t = await authFetch(API_BASE + '/test-push', { method: 'POST' });
+        const td = await t.json();
+        if (td.success) addLog('Test notification sent — check for the popup', 'success');
+      } catch (_) {}
+    } else {
+      const errData = await res.json();
+      alert('Server rejected the subscription: ' + (errData.error || 'unknown error'));
+    }
   } catch (err) {
     console.error('Subscribe error:', err);
-    alert('Failed to subscribe: ' + err.message);
+    if (/iPad|iPhone|iPod/.test(navigator.userAgent) && !isStandalonePWA()) {
+      alert('On iPhone/iPad you must add this site to your Home Screen first, then open it from there and enable notifications.');
+      showDeviceInstructions(true);
+    } else {
+      alert('Failed to enable notifications: ' + err.message);
+    }
   }
-});
-
-async function sendSubscriptionToServer(sub) {
-  const res = await authFetch(API_BASE + '/subscribe', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(sub)
-  });
-  if (!res.ok) console.error('Failed to send subscription to server');
 }
+
+testPushBtn.addEventListener('click', async () => {
+  if (!userId) return;
+  testPushBtn.disabled = true;
+  testPushBtn.textContent = 'Sending…';
+  try {
+    const res = await authFetch(API_BASE + '/test-push', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      addLog('Test notification sent to ' + data.sent + ' device(s)', 'success');
+      alert('Test notification sent to ' + data.sent + ' device(s). Check for the popup!');
+    } else {
+      alert(data.error || 'Failed to send test notification.');
+    }
+  } catch (e) {
+    alert('Network error while sending test notification.');
+  }
+  testPushBtn.disabled = false;
+  testPushBtn.textContent = '🔔 Test';
+});
 
 // ─── Rendering functions ───────────────────────────────────────────────
 function renderAll(data) {
@@ -973,10 +1103,21 @@ function renderAll(data) {
   } else {
     termLimitWarning.style.display = 'none';
   }
+
+  // Keep push status in sync with the server
   if (data.pushEnabled) {
     setPushStatus('✅', 'Notifications enabled', 'badge-push-on');
     enablePushBtn.textContent = '✅ Enabled';
     enablePushBtn.disabled = true;
+    testPushBtn.style.display = 'inline-block';
+  } else if (pushSubscription) {
+    // We have a local subscription but the server lost it (expired/restart)
+    setPushStatus('⚠️', 'Re-enable notifications', 'badge-push-off');
+    enablePushBtn.style.display = 'inline-block';
+    enablePushBtn.disabled = false;
+    enablePushBtn.textContent = '🔔 Re-enable';
+    testPushBtn.style.display = 'none';
+    refreshPushBtn.style.display = 'inline-block';
   }
 }
 
@@ -1291,8 +1432,35 @@ app.post('/subscribe', (req, res) => {
   subs = subs.filter(s => s.endpoint !== subscription.endpoint);
   subs.push(subscription);
   savePushSubscriptions(userId, subs);
-  console.log(`Push subscription saved for user ${userId}`);
-  res.json({ success: true });
+  console.log(`Push subscription saved for user ${userId} (${subs.length} total)`);
+  broadcastUpdate(userId);
+  res.json({ success: true, count: subs.length });
+});
+
+// POST /test-push — sends a test notification so the user can verify push works
+app.post('/test-push', (req, res) => {
+  const userId = req.userId;
+  const subs = loadPushSubscriptions(userId);
+  if (subs.length === 0) {
+    return res.status(400).json({ error: 'No push subscription found. Enable notifications first.' });
+  }
+  const payload = JSON.stringify({
+    title: '🔔 Test notification',
+    body: 'Push notifications are working! You will now get a popup for every bargain.',
+    icon: ICON_URL,
+    badge: ICON_URL,
+    url: '/',
+    data: { term: null }
+  });
+  let sent = 0;
+  let failed = 0;
+  Promise.all(subs.map(sub =>
+    webpush.sendNotification(sub, payload)
+      .then(() => { sent++; })
+      .catch(err => { handlePushError(userId, sub, err); failed++; })
+  )).then(() => {
+    res.json({ success: sent > 0, sent, failed });
+  });
 });
 
 // POST /terms
@@ -1314,7 +1482,9 @@ app.post('/terms', (req, res) => {
   userData.terms.push(obj);
   saveUserTerms(userId, userData.terms);
   broadcastUpdate(userId);
-  res.json({ success: true, term: obj });
+  res.json({
+    success: true, term: obj
+  });
 });
 
 // DELETE /terms/:term
@@ -1613,7 +1783,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('WebSocket: ws://localhost:' + PORT);
   console.log('Data directory: ' + DATA_DIR);
   console.log('Persistent storage: ' + (process.env.RENDER_PERSISTENT_DISK ? 'enabled' : 'disabled'));
-  console.log('Membership sync interval: ' + MEMBERSHIP_SYNC_INTERVAL/1000 + 's');
+  console.log('Membership sync interval: ' + MEMBERSHIP_SYNC_INTERVAL / 1000 + 's');
   console.log('Referral route: /referral?referral=YOUR_CODE');
   console.log('VAPID Public Key: ' + VAPID_PUBLIC_KEY.substring(0, 30) + '...');
   console.log('='.repeat(60) + '\n');
