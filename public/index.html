@@ -724,6 +724,18 @@
       font-size: 13.5px;
       font-weight: 600;
     }
+    /* form status states (wired-up contact form) */
+    .form-ok.sending {
+      background: rgba(255, 255, 255, 0.03);
+      border-color: var(--border);
+      color: var(--text-muted);
+    }
+    .form-ok.error {
+      background: rgba(255, 77, 94, 0.10);
+      border-color: rgba(255, 77, 94, 0.35);
+      color: var(--red);
+    }
+    .form-ok a { color: var(--accent-hover); text-decoration: underline; }
 
     /* ============================================================
        CTA PANE
@@ -951,21 +963,13 @@
           <span>For free trial, no credit card is required"</span>
         </div>
       </div>
-
-      
+    </div>
   </section>
 
   <!-- ============================================================
        TRUST STRIP — EDIT: brands / stats
        ============================================================ -->
-  <div class="strip">
-    <div class="container">
-      <span class="strip__label">Trusted by</span>
-      <div class="strip__items">
-        <span class="strip__item">HELLA PEOPLE</span>
-      </div>
-    </div>
-  </div>
+
 
   <!-- ============================================================
        FEATURES
@@ -973,7 +977,7 @@
   <section id="features">
     <div class="container">
       <div class="section-head center">
-        <h2>Features <span class="accent">section heading</span></h2>
+        <h2>Features <span class="accent"></span></h2>
         <p>Vinted Heist offers a few features that put our platform above our competitors.</p>
       </div>
 
@@ -1009,8 +1013,8 @@
               <path d="M22 2l-7 20-4-9-9-4 20-7z"/>
             </svg>
           </div>
-          <h3>Feature title</h3>
-          <p>Describe this feature in one or two sentences. What problem does it solve for the user?</p>
+           <h3>Versatile Design.</h3>
+          <p>Vinted Heist isnt limited to clothes only. The scrapers use search terms to find new listings so you can find any items, eg. watches, jewelerry, whatever is listed, you can get notifications for it.</p>
         </div>
 
         <!-- card 4 -->
@@ -1024,17 +1028,6 @@
           </div>
           <h3>Constantly Scraping</h3>
           <p>The platform uses servers worldwide to constantly get the newest listings for customers like you. As soon as somebody posts something, our scanners will be for sure detecting the listing asap.</p>
-        </div>
-
-        <!-- card 5 -->
-        <div class="card">
-          <div class="icon">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 2l2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.5-4.8 2.5.9-5.4L4.2 7.7l5.4-.8L12 2z"/>
-            </svg>
-          </div>
-          <h3>Versatile Design.</h3>
-          <p>Vinted Heist isnt limited to clothes only. The scrapers use search terms to find new listings so you can find any items, eg. watches, jewelerry, whatever is listed, you can get notifications for it.</p>
         </div>
 
 
@@ -1152,7 +1145,7 @@
         
         </div>
 
-        <!-- demo contact form — wire up to your backend when ready -->
+        <!-- contact form — wired up via FormSubmit.co (same account as IP Shuttle) -->
         <form class="contact-form" id="contactForm" novalidate>
           <div class="form-row">
             <div class="field">
@@ -1173,7 +1166,7 @@
             <textarea id="cf-msg" name="message" placeholder="Write your message..."></textarea>
           </div>
           <button type="submit" class="btn btn-primary btn-block">Send Message</button>
-          <div class="form-ok" id="formOk">Message sent. Thank you.</div>
+          <p class="form-ok" id="formStatus" role="status" aria-live="polite"></p>
         </form>
       </div>
     </div>
@@ -1315,15 +1308,69 @@
         });
       }, { passive: true });
 
-      /* ---------- demo contact form ---------- */
+      /* ---------- contact form (FormSubmit.co) ---------- */
       var form = document.getElementById('contactForm');
-      var okBox = document.getElementById('formOk');
-      form.addEventListener('submit', function (e) {
+      var status = document.getElementById('formStatus');
+
+      // FormSubmit.co AJAX endpoint — same API key as the IP Shuttle form
+      var FORM_SUBMIT_URL = 'https://formsubmit.co/vintedheist@elektrine.com';
+
+      function setStatus(msg, type) {
+        status.textContent = msg;
+        status.className = 'form-ok' + (type ? ' ' + type : '');
+        status.style.display = 'block';
+      }
+
+      form.addEventListener('submit', async function (e) {
         e.preventDefault();
-        // EDIT: replace with fetch() to your real endpoint
-        okBox.style.display = 'block';
-        form.reset();
-        setTimeout(function () { okBox.style.display = 'none'; }, 4000);
+
+        var name = document.getElementById('cf-name').value.trim();
+        var email = document.getElementById('cf-email').value.trim();
+        var subject = document.getElementById('cf-subject').value.trim();
+        var message = document.getElementById('cf-msg').value.trim();
+
+        if (!email || !message) {
+          setStatus('Please fill in your email and message.', 'error');
+          return;
+        }
+
+        setStatus('Sending...', 'sending');
+
+        try {
+          var response = await fetch(FORM_SUBMIT_URL, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+              name: name,
+              email: email,
+              subject: subject,
+              message: message,
+              _subject: subject ? 'Vinted Heist - ' + subject : 'Vinted Heist - Contact form',
+              _replyto: email
+            })
+          });
+
+          var result = await response.json();
+
+          if (response.ok) {
+            setStatus('Message sent! I will reply soon.');
+            form.reset();
+            setTimeout(function () { status.style.display = 'none'; }, 6000);
+          } else {
+            throw new Error(result.message || 'Failed to send');
+          }
+        } catch (err) {
+          console.error('Error:', err);
+          status.className = 'form-ok error';
+          status.style.display = 'block';
+          status.innerHTML = 'Error sending. Please email me directly: <a href="mailto:vintedheist@elektrine.com?subject=' +
+            encodeURIComponent(subject || 'Vinted Heist - Contact') +
+            '&body=' + encodeURIComponent('Name: ' + name + '\nEmail: ' + email + '\n\n' + message) +
+            '">vintedheist@elektrine.com</a>';
+        }
       });
     })();
   </script>
